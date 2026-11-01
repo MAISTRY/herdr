@@ -153,6 +153,10 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
+/// Columns the agent list keeps beside the text: the space colour bar on the left
+/// and the scrollbar column on the right.
+pub(super) const AGENT_RESERVED_COLUMNS: u16 = 2;
+
 pub(super) fn render_agent_list<T>(
     buffer: &mut Buffer,
     area: Rect,
@@ -190,9 +194,10 @@ pub(super) fn render_agent_list<T>(
 
     let row_heights = rows
         .iter()
-        // One column is kept for a possible scrollbar so heights match the drawn width.
+        // Two columns are reserved (space bar and scrollbar), always, so the measured
+        // wrap width is exactly the drawn one.
         .map(|row| {
-            row_lines(row, body.width.saturating_sub(1))
+            row_lines(row, body.width.saturating_sub(AGENT_RESERVED_COLUMNS))
                 .max(1)
                 .min(u16::MAX as usize) as u16
         })
@@ -216,7 +221,7 @@ pub(super) fn render_agent_list<T>(
         .max_offset_from_bottom
         .saturating_sub(metrics.offset_from_bottom);
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
+    let content_width = body.width.saturating_sub(1);
     let mut y = body.y;
     for (index, row) in rows.iter().enumerate().skip(*agent_scroll) {
         let height = row_heights[index].min(body.height);
@@ -341,20 +346,34 @@ pub(super) fn render_agent_row(
         Some(color) => Style::default().bg(super::sidebar::tint(
             color,
             palette.sidebar_bg,
-            if row.focused { 0.30 } else { 0.14 },
+            if row.focused { 0.38 } else { 0.22 },
         )),
         None if row.focused => Style::default().bg(palette.active_row_bg),
         None => Style::default(),
     };
-    for (index, line) in agent_row_lines(row, config, rect.width)
+    for (index, line) in agent_row_lines(row, config, rect.width.saturating_sub(1))
         .into_iter()
         .take(rect.height as usize)
         .enumerate()
     {
+        let y = rect.y + index as u16;
         Paragraph::new(Line::from(line)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            Rect::new(rect.x + 1, y, rect.width.saturating_sub(1), 1),
             buffer,
         );
+        if let Some(cell) = buffer.cell_mut((rect.x, y)) {
+            match row.space_color {
+                Some(color) => {
+                    cell.set_char('▌').set_fg(color);
+                }
+                None => {
+                    cell.set_char(' ');
+                }
+            }
+            if let Some(bg) = row_style.bg {
+                cell.set_bg(bg);
+            }
+        }
     }
 }
 

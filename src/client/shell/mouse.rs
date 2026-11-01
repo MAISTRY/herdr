@@ -527,8 +527,8 @@ impl ClientShellState {
             .map(|tab| tab.workspace_id.clone())
     }
 
-    /// Move a session (tab) into another space as a new tab there. Each pane of the
-    /// tab is moved; a multi-pane tab arrives as one tab per pane.
+    /// Move a session (tab) into another space as one new tab there; a multi-pane
+    /// tab keeps all its panes together.
     fn move_tab_to_space(
         &mut self,
         tab_id: &str,
@@ -552,25 +552,30 @@ impl ClientShellState {
             .collect::<Vec<_>>();
         // Focused pane last so focus ends on it.
         panes.sort_by_key(|(focused, _)| *focused);
-        let count = panes.len();
-        for (index, (_, pane_id)) in panes.into_iter().enumerate() {
-            let focus = index + 1 == count;
-            let method =
-                crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
-                    pane_id: pane_id.clone(),
-                    destination: crate::api::schema::PaneMoveDestination::NewTab {
-                        workspace_id: Some(workspace_id.clone()),
-                        label: label.clone(),
-                    },
-                    focus,
-                });
-            if self.supports_endpoint_method(&method) {
-                self.push_endpoint_method(method, outcome);
-            } else {
-                // Servers that do not accept pane.move from the TUI still accept it on
-                // the public API socket, so run the CLI against it.
-                spawn_cli_pane_move(&pane_id, &workspace_id, label.as_deref(), focus);
-            }
+        if panes.len() > 1 {
+            // Keeping the panes together needs the id of the tab created for the first
+            // one, which only the response carries: run the moves in order via the CLI.
+            let pane_ids = panes.into_iter().map(|(_, id)| id).collect();
+            spawn_cli_tab_move(pane_ids, workspace_id, label);
+            return;
+        }
+        let Some((_, pane_id)) = panes.into_iter().next() else {
+            return;
+        };
+        let method = crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+            pane_id: pane_id.clone(),
+            destination: crate::api::schema::PaneMoveDestination::NewTab {
+                workspace_id: Some(workspace_id.clone()),
+                label: label.clone(),
+            },
+            focus: true,
+        });
+        if self.supports_endpoint_method(&method) {
+            self.push_endpoint_method(method, outcome);
+        } else {
+            // Servers that do not accept pane.move from the TUI still accept it on
+            // the public API socket, so run the CLI against it.
+            spawn_cli_pane_move(&pane_id, &workspace_id, label.as_deref(), true);
         }
     }
 
@@ -2482,22 +2487,81 @@ impl ClientShellState {
     }
 }
 
-fn spawn_cli_pane_move(pane_id: &str, workspace_id: &str, label: Option<&str>, focus: bool) {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
+fn cli_pane_move_command(pane_id: &str, focus: bool) -> Option<std::process::Command> {
+    let exe = std::env::current_exe().ok()?;
     let mut command = std::process::Command::new(exe);
     command
-        .args(["pane", "move", pane_id, "--new-tab", "--workspace", workspace_id])
-        .arg(if focus { "--focus" } else { "--no-focus" })
+        .args(["pane", "move", pane_id])
         .env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path())
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    command.arg(if focus { "--focus" } else { "--no-focus" });
+    Some(command)
+}
+
+fn spawn_cli_pane_move(pane_id: &str, workspace_id: &str, label: Option<&str>, focus: bool) {
+    let Some(mut command) = cli_pane_move_command(pane_id, focus) else {
+        return;
+    };
+    command
+        .args(["--new-tab", "--workspace", workspace_id])
+        .stdout(std::process::Stdio::null());
     if let Some(label) = label {
         command.args(["--label", label]);
     }
     if let Err(err) = command.spawn() {
         tracing::warn!(%err, "failed to run herdr pane move for sidebar drag");
     }
+}
+
+/// Finds the `created_tab.tab_id` of a `pane move` response.
+fn created_tab_id(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get("created_tab")
+            .and_then(|tab| tab.get("tab_id"))
+            .and_then(|id| id.as_str())
+            .map(str::to_string)
+            .or_else(|| map.values().find_map(created_tab_id)),
+        _ => None,
+    }
+}
+
+/// Moves all `pane_ids` into one new tab of `workspace_id`: the first pane creates
+/// the tab, the others are split into it. Runs on a background thread.
+fn spawn_cli_tab_move(pane_ids: Vec<String>, workspace_id: String, label: Option<String>) {
+    std::thread::spawn(move || {
+        let last = pane_ids.len().saturating_sub(1);
+        let mut tab_id: Option<String> = None;
+        for (index, pane_id) in pane_ids.iter().enumerate() {
+            let Some(mut command) = cli_pane_move_command(pane_id, index == last) else {
+                return;
+            };
+            match &tab_id {
+                None => {
+                    command.args(["--new-tab", "--workspace", &workspace_id]);
+                    if let Some(label) = &label {
+                        command.args(["--label", label]);
+                    }
+                }
+                Some(tab_id) => {
+                    command.args(["--tab", tab_id, "--split", "right"]);
+                }
+            }
+            command.stdout(std::process::Stdio::piped());
+            let Ok(output) = command.output() else {
+                tracing::warn!("failed to run herdr pane move for sidebar drag");
+                return;
+            };
+            if tab_id.is_none() {
+                tab_id = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .ok()
+                    .and_then(|value| created_tab_id(&value));
+                if tab_id.is_none() {
+                    tracing::warn!("pane move response had no created tab; stopping");
+                    return;
+                }
+            }
+        }
+    });
 }

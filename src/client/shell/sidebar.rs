@@ -254,6 +254,7 @@ pub(crate) fn render_sidebar(
                     .max(1)
                     .saturating_add(
                         space_session_lines(
+                            snapshot,
                             &space_sessions(snapshot, &workspace.workspace_id)
                                 .collect::<Vec<_>>(),
                             entry.indented,
@@ -322,6 +323,7 @@ pub(crate) fn render_sidebar(
         let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
         let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         let session_lines = space_session_lines(
+            snapshot,
             &sessions,
             entry.indented,
             config.status_indicators,
@@ -842,8 +844,12 @@ pub(in crate::client::shell) fn space_sessions<'a>(
         .filter(move |tab| tab.workspace_id == workspace_id)
 }
 
-/// Display lines for each session row of one space, wrapped to `width`.
-fn space_session_lines(
+/// Display lines for each session row of one space, wrapped to `width`. The
+/// prefix, status icon and start of the name stay on the first line; only the name
+/// wraps, with continuation lines indented under where the name starts. A session
+/// with several agent panes lists each pane on its own line below its name.
+pub(in crate::client::shell) fn space_session_lines(
+    snapshot: &ClientShellSnapshot,
     sessions: &[&crate::protocol::ClientShellTab],
     indented: bool,
     indicators: crate::config::StatusIndicatorStyle,
@@ -852,11 +858,13 @@ fn space_session_lines(
 ) -> Vec<Vec<Vec<ratatui::text::Span<'static>>>> {
     use ratatui::text::Span;
     let base = if indented { "      " } else { "  " };
+    let width = width as usize;
     sessions
         .iter()
         .enumerate()
         .map(|(index, tab)| {
-            let branch = if index + 1 == sessions.len() { "└ " } else { "├ " };
+            let last = index + 1 == sessions.len();
+            let branch = if last { "└ " } else { "├ " };
             let label_style = if tab.focused {
                 Style::default()
                     .fg(palette.accent)
@@ -864,16 +872,82 @@ fn space_session_lines(
             } else {
                 Style::default().fg(palette.overlay1)
             };
-            let spans = vec![
-                Span::styled(format!("{base}{branch}"), Style::default().fg(palette.subtext0)),
-                Span::styled(
-                    format!("{} ", status_icon(tab.agent_status, indicators)),
-                    Style::default().fg(status_color(tab.agent_status, palette)),
-                ),
-                Span::styled(tab.label.clone(), label_style),
-            ];
-            let continuation = base.len() + 4;
-            super::agent_sidebar::wrap_spans(spans, width as usize, 0, continuation)
+            let prefix_style = Style::default().fg(palette.subtext0);
+            let icon = format!("{} ", status_icon(tab.agent_status, indicators));
+            let prefix_width = base.len() + 2 + display_width(&icon);
+            let name = super::agent_sidebar::wrap_spans(
+                vec![Span::styled(tab.label.clone(), label_style)],
+                width.saturating_sub(prefix_width).max(1),
+                0,
+                0,
+            );
+            let mut lines = Vec::new();
+            for (line_index, mut line) in name.into_iter().enumerate() {
+                if line_index == 0 {
+                    let mut spans = vec![
+                        Span::styled(format!("{base}{branch}"), prefix_style),
+                        Span::styled(
+                            icon.clone(),
+                            Style::default().fg(status_color(tab.agent_status, palette)),
+                        ),
+                    ];
+                    spans.append(&mut line);
+                    lines.push(spans);
+                } else {
+                    let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
+                    spans.append(&mut line);
+                    lines.push(spans);
+                }
+            }
+            let agents = snapshot
+                .agents
+                .iter()
+                .filter(|agent| agent.tab_id == tab.tab_id)
+                .collect::<Vec<_>>();
+            if agents.len() > 1 {
+                let guide = if last { "  " } else { "│ " };
+                let agent_prefix = format!("{base}{guide}");
+                let agent_prefix_width = display_width(&agent_prefix) + 2;
+                for agent in agents {
+                    let text = agent
+                        .display_agent
+                        .as_deref()
+                        .or(agent.name.as_deref())
+                        .or(agent.agent.as_deref())
+                        .or(agent.title.as_deref())
+                        .or(agent.terminal_title_stripped.as_deref())
+                        .or(agent.terminal_title.as_deref())
+                        .unwrap_or("terminal");
+                    let name_style = Style::default().fg(if agent.focused {
+                        palette.text
+                    } else {
+                        palette.overlay1
+                    });
+                    let wrapped = super::agent_sidebar::wrap_spans(
+                        vec![Span::styled(text.to_string(), name_style)],
+                        width.saturating_sub(agent_prefix_width).max(1),
+                        0,
+                        0,
+                    );
+                    for (line_index, mut line) in wrapped.into_iter().enumerate() {
+                        let mut spans = if line_index == 0 {
+                            vec![
+                                Span::styled(agent_prefix.clone(), prefix_style),
+                                Span::styled(
+                                    format!("{} ", status_icon(agent.agent_status, indicators)),
+                                    Style::default()
+                                        .fg(status_color(agent.agent_status, palette)),
+                                ),
+                            ]
+                        } else {
+                            vec![Span::raw(" ".repeat(agent_prefix_width))]
+                        };
+                        spans.append(&mut line);
+                        lines.push(spans);
+                    }
+                }
+            }
+            lines
         })
         .collect()
 }
@@ -898,7 +972,7 @@ fn render_space_sessions(
         }
         for (offset, line) in tab_lines.into_iter().take(height as usize).enumerate() {
             Paragraph::new(Line::from(line)).render(
-                Rect::new(area.x, y + offset as u16, area.width.saturating_sub(1), 1),
+                Rect::new(area.x, y + offset as u16, area.width, 1),
                 buffer,
             );
         }
@@ -956,6 +1030,10 @@ fn render_sidebar_status_block(
         area.width,
         area.height.saturating_sub(used),
     )
+}
+
+fn display_width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
 }
 
 /// A distinct theme colour per space, in space order.

@@ -110,7 +110,10 @@ impl ClientShellState {
                 super::agent_sidebar::agent_row_lines(
                     &row.agent,
                     &self.config,
-                    self.hits.agent_body.width.saturating_sub(1),
+                    self.hits
+                        .agent_body
+                        .width
+                        .saturating_sub(super::agent_sidebar::AGENT_RESERVED_COLUMNS),
                 )
                 .len()
                 .max(1)
