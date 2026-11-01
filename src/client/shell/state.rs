@@ -90,6 +90,8 @@ pub(super) struct ShellHitMap {
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
     pub(super) tabs: Vec<(Rect, String)>,
+    /// Session rows listed under each space in the expanded sidebar: (rect, tab_id).
+    pub(super) sidebar_tabs: Vec<(Rect, String)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
@@ -212,6 +214,8 @@ pub(super) enum ClientChromeDrag {
         tab_id: String,
         workspace_id: String,
         insert_index: Option<usize>,
+        /// Space under the pointer when a tab is dragged onto the sidebar.
+        target_workspace_id: Option<String>,
     },
     Workspace {
         source_workspace_id: String,

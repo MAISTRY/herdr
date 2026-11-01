@@ -251,6 +251,7 @@ pub(crate) fn render_sidebar(
                     )
                     .len()
                     .max(1)
+                    .saturating_add(space_sessions(snapshot, &workspace.workspace_id).count())
                     .min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
@@ -305,11 +306,29 @@ pub(crate) fn render_sidebar(
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
+        let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let row_height = head_height
+            .saturating_add(sessions.len().min(u16::MAX as usize) as u16)
+            .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
         }
-        let rect = Rect::new(body.x, y, content_width, row_height);
+        let rect = Rect::new(body.x, y, content_width, head_height);
+        render_space_sessions(
+            buffer,
+            Rect::new(
+                body.x,
+                y.saturating_add(head_height),
+                content_width,
+                row_height.saturating_sub(head_height),
+            ),
+            &sessions,
+            entry.indented,
+            config.status_indicators,
+            palette,
+            hits,
+        );
         let selected = state.selected_workspace_id.is_some_and(|target| {
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
@@ -851,5 +870,64 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+}
+
+/// Tabs of one space in display order; each is a "session" row under the space.
+pub(in crate::client::shell) fn space_sessions<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    workspace_id: &'a str,
+) -> impl Iterator<Item = &'a crate::protocol::ClientShellTab> + 'a {
+    snapshot
+        .tabs
+        .iter()
+        .filter(move |tab| tab.workspace_id == workspace_id)
+}
+
+fn render_space_sessions(
+    buffer: &mut Buffer,
+    area: Rect,
+    sessions: &[&crate::protocol::ClientShellTab],
+    indented: bool,
+    indicators: crate::config::StatusIndicatorStyle,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
+    let base = if indented { "      " } else { "  " };
+    for (index, tab) in sessions.iter().enumerate() {
+        let y = area.y.saturating_add(index as u16);
+        if y >= area.bottom() {
+            break;
+        }
+        let row = Rect::new(area.x, y, area.width, 1);
+        if tab.focused {
+            buffer.set_style(row, Style::default().bg(palette.surface0));
+        }
+        let branch = if index + 1 == sessions.len() { "└ " } else { "├ " };
+        let mut x = put_segment(
+            buffer,
+            area.x,
+            y,
+            area.right(),
+            &format!("{base}{branch}"),
+            Style::default().fg(palette.overlay0),
+        );
+        x = put_segment(
+            buffer,
+            x,
+            y,
+            area.right(),
+            &format!("{} ", status_icon(tab.agent_status, indicators)),
+            Style::default().fg(status_color(tab.agent_status, palette)),
+        );
+        put_segment(
+            buffer,
+            x,
+            y,
+            area.right().saturating_sub(1),
+            &tab.label,
+            Style::default().fg(if tab.focused { palette.text } else { palette.subtext0 }),
+        );
+        hits.sidebar_tabs.push((row, tab.tab_id.clone()));
     }
 }
