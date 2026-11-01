@@ -554,17 +554,23 @@ impl ClientShellState {
         panes.sort_by_key(|(focused, _)| *focused);
         let count = panes.len();
         for (index, (_, pane_id)) in panes.into_iter().enumerate() {
-            self.push_endpoint_method(
+            let focus = index + 1 == count;
+            let method =
                 crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
-                    pane_id,
+                    pane_id: pane_id.clone(),
                     destination: crate::api::schema::PaneMoveDestination::NewTab {
                         workspace_id: Some(workspace_id.clone()),
                         label: label.clone(),
                     },
-                    focus: index + 1 == count,
-                }),
-                outcome,
-            );
+                    focus,
+                });
+            if self.supports_endpoint_method(&method) {
+                self.push_endpoint_method(method, outcome);
+            } else {
+                // Servers that do not accept pane.move from the TUI still accept it on
+                // the public API socket, so run the CLI against it.
+                spawn_cli_pane_move(&pane_id, &workspace_id, label.as_deref(), focus);
+            }
         }
     }
 
@@ -2485,5 +2491,25 @@ impl ClientShellState {
             },
             outcome,
         );
+    }
+}
+
+fn spawn_cli_pane_move(pane_id: &str, workspace_id: &str, label: Option<&str>, focus: bool) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut command = std::process::Command::new(exe);
+    command
+        .args(["pane", "move", pane_id, "--new-tab", "--workspace", workspace_id])
+        .arg(if focus { "--focus" } else { "--no-focus" })
+        .env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(label) = label {
+        command.args(["--label", label]);
+    }
+    if let Err(err) = command.spawn() {
+        tracing::warn!(%err, "failed to run herdr pane move for sidebar drag");
     }
 }
