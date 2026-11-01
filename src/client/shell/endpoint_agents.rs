@@ -70,7 +70,7 @@ pub(super) fn render_expanded(
         config,
         agent_scroll,
         hits,
-        |row| row.agent.rows.len(),
+        |row, width| super::agent_sidebar::agent_row_lines(&row.agent, config, width).len(),
         |buffer, rect, row, hits| {
             super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
             if row.stale {
@@ -106,7 +106,16 @@ impl ClientShellState {
         };
         let heights = rows
             .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
+            .map(|row| {
+                super::agent_sidebar::agent_row_lines(
+                    &row.agent,
+                    &self.config,
+                    self.hits.agent_body.width.saturating_sub(1),
+                )
+                .len()
+                .max(1)
+                .min(u16::MAX as usize) as u16
+            })
             .collect::<Vec<_>>();
         let mut gaps = vec![self.config.agents.row_gap; rows.len()];
         if let Some(last) = gaps.last_mut() {
