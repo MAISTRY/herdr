@@ -508,6 +508,66 @@ impl ClientShellState {
         Some(last_index + 1)
     }
 
+    fn sidebar_space_at(&self, point: (u16, u16)) -> Option<String> {
+        if let Some(hit) = self.hits.workspaces.iter().find(|hit| {
+            hit.endpoint_id == self.active_endpoint_id && super::contains(hit.rect, point)
+        }) {
+            return Some(hit.workspace_id.clone());
+        }
+        let (_, tab_id) = self
+            .hits
+            .sidebar_tabs
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))?;
+        self.snapshot
+            .as_deref()?
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == *tab_id)
+            .map(|tab| tab.workspace_id.clone())
+    }
+
+    /// Move a session (tab) into another space as a new tab there. Each pane of the
+    /// tab is moved; a multi-pane tab arrives as one tab per pane.
+    fn move_tab_to_space(
+        &mut self,
+        tab_id: &str,
+        workspace_id: String,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return;
+        };
+        let label = snapshot
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .filter(|tab| tab.custom_label)
+            .map(|tab| tab.label.clone());
+        let mut panes = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.tab_id == tab_id)
+            .map(|pane| (pane.focused, pane.pane_id.clone()))
+            .collect::<Vec<_>>();
+        // Focused pane last so focus ends on it.
+        panes.sort_by_key(|(focused, _)| *focused);
+        let count = panes.len();
+        for (index, (_, pane_id)) in panes.into_iter().enumerate() {
+            self.push_endpoint_method(
+                crate::api::schema::Method::PaneMove(crate::api::schema::PaneMoveParams {
+                    pane_id,
+                    destination: crate::api::schema::PaneMoveDestination::NewTab {
+                        workspace_id: Some(workspace_id.clone()),
+                        label: label.clone(),
+                    },
+                    focus: index + 1 == count,
+                }),
+                outcome,
+            );
+        }
+    }
+
     fn workspace_drop_target_at(&self, point: (u16, u16)) -> Option<(Option<String>, u16)> {
         if self.hits.workspace_body.height == 0
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
@@ -1194,12 +1254,15 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::Tab { .. }) => {
                     let insert_index = self.tab_drop_index_at(point);
+                    let space = self.sidebar_space_at(point);
                     if let Some(ClientChromeDrag::Tab {
                         insert_index: current,
+                        target_workspace_id,
                         ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = insert_index;
+                        *target_workspace_id = space;
                     }
                     outcome.repaint = true;
                     return;
@@ -1243,11 +1306,14 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
-                    if let Some(insert_index) = self.tab_drop_index_at(point) {
+                    let insert_index = self.tab_drop_index_at(point);
+                    let space = self.sidebar_space_at(point);
+                    if insert_index.is_some() || space.is_some() {
                         self.chrome_drag = Some(ClientChromeDrag::Tab {
                             tab_id: press.tab_id.clone(),
                             workspace_id: press.workspace_id.clone(),
-                            insert_index: Some(insert_index),
+                            insert_index,
+                            target_workspace_id: space,
                         });
                         outcome.repaint = true;
                     }
@@ -1265,6 +1331,14 @@ impl ClientShellState {
                         workspace_id,
                         ..
                     } => {
+                        if let Some(target) = self
+                            .sidebar_space_at(point)
+                            .filter(|target| *target != workspace_id)
+                        {
+                            self.move_tab_to_space(&tab_id, target, outcome);
+                            outcome.repaint = true;
+                            return;
+                        }
                         let insert_index = self.tab_drop_index_at(point);
                         let valid_drop = self.snapshot.as_deref().is_some_and(|snapshot| {
                             snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
@@ -2120,6 +2194,7 @@ impl ClientShellState {
                         self.hits
                             .tabs
                             .iter()
+                            .chain(self.hits.sidebar_tabs.iter())
                             .find(|(rect, _)| super::contains(*rect, point))
                             .and_then(|(_, tab_id)| {
                                 let tab = self
