@@ -251,7 +251,19 @@ pub(crate) fn render_sidebar(
                     )
                     .len()
                     .max(1)
-                    .saturating_add(space_sessions(snapshot, &workspace.workspace_id).count())
+                    .saturating_add(
+                        space_session_lines(
+                            &space_sessions(snapshot, &workspace.workspace_id)
+                                .collect::<Vec<_>>(),
+                            entry.indented,
+                            config.status_indicators,
+                            palette,
+                            body.width.saturating_sub(1),
+                        )
+                        .iter()
+                        .map(Vec::len)
+                        .sum::<usize>(),
+                    )
                     .min(u16::MAX as usize) as u16
                 })
                 .unwrap_or(1)
@@ -308,8 +320,21 @@ pub(crate) fn render_sidebar(
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
         let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
         let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let session_lines = space_session_lines(
+            &sessions,
+            entry.indented,
+            config.status_indicators,
+            palette,
+            body.width.saturating_sub(1),
+        );
         let row_height = head_height
-            .saturating_add(sessions.len().min(u16::MAX as usize) as u16)
+            .saturating_add(
+                session_lines
+                    .iter()
+                    .map(Vec::len)
+                    .sum::<usize>()
+                    .min(u16::MAX as usize) as u16,
+            )
             .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -324,8 +349,7 @@ pub(crate) fn render_sidebar(
                 row_height.saturating_sub(head_height),
             ),
             &sessions,
-            entry.indented,
-            config.status_indicators,
+            session_lines,
             palette,
             hits,
         );
@@ -884,56 +908,70 @@ pub(in crate::client::shell) fn space_sessions<'a>(
         .filter(move |tab| tab.workspace_id == workspace_id)
 }
 
-fn render_space_sessions(
-    buffer: &mut Buffer,
-    area: Rect,
+/// Display lines for each session row of one space, wrapped to `width`.
+fn space_session_lines(
     sessions: &[&crate::protocol::ClientShellTab],
     indented: bool,
     indicators: crate::config::StatusIndicatorStyle,
     palette: &Palette,
-    hits: &mut ShellHitMap,
-) {
+    width: u16,
+) -> Vec<Vec<Vec<ratatui::text::Span<'static>>>> {
+    use ratatui::text::Span;
     let base = if indented { "      " } else { "  " };
-    for (index, tab) in sessions.iter().enumerate() {
-        let y = area.y.saturating_add(index as u16);
-        if y >= area.bottom() {
-            break;
-        }
-        let row = Rect::new(area.x, y, area.width, 1);
-        if tab.focused {
-            buffer.set_style(row, Style::default().bg(palette.surface0));
-        }
-        let branch = if index + 1 == sessions.len() { "└ " } else { "├ " };
-        let mut x = put_segment(
-            buffer,
-            area.x,
-            y,
-            area.right(),
-            &format!("{base}{branch}"),
-            Style::default().fg(palette.overlay1),
-        );
-        x = put_segment(
-            buffer,
-            x,
-            y,
-            area.right(),
-            &format!("{} ", status_icon(tab.agent_status, indicators)),
-            Style::default().fg(status_color(tab.agent_status, palette)),
-        );
-        put_segment(
-            buffer,
-            x,
-            y,
-            area.right().saturating_sub(1),
-            &tab.label,
-            if tab.focused {
+    sessions
+        .iter()
+        .enumerate()
+        .map(|(index, tab)| {
+            let branch = if index + 1 == sessions.len() { "└ " } else { "├ " };
+            let label_style = if tab.focused {
                 Style::default()
                     .fg(palette.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(palette.text)
-            },
-        );
-        hits.sidebar_tabs.push((row, tab.tab_id.clone()));
+            };
+            let spans = vec![
+                Span::styled(
+                    format!("{base}{branch}"),
+                    Style::default().fg(palette.overlay1),
+                ),
+                Span::styled(
+                    format!("{} ", status_icon(tab.agent_status, indicators)),
+                    Style::default().fg(status_color(tab.agent_status, palette)),
+                ),
+                Span::styled(tab.label.clone(), label_style),
+            ];
+            let continuation = base.len() + 4;
+            super::agent_sidebar::wrap_spans(spans, width as usize, 0, continuation)
+        })
+        .collect()
+}
+
+fn render_space_sessions(
+    buffer: &mut Buffer,
+    area: Rect,
+    sessions: &[&crate::protocol::ClientShellTab],
+    lines: Vec<Vec<Vec<ratatui::text::Span<'static>>>>,
+    palette: &Palette,
+    hits: &mut ShellHitMap,
+) {
+    let mut y = area.y;
+    for (tab, tab_lines) in sessions.iter().zip(lines) {
+        if y >= area.bottom() {
+            break;
+        }
+        let height = (tab_lines.len() as u16).min(area.bottom() - y);
+        let rect = Rect::new(area.x, y, area.width, height);
+        if tab.focused {
+            buffer.set_style(rect, Style::default().bg(palette.surface0));
+        }
+        for (offset, line) in tab_lines.into_iter().take(height as usize).enumerate() {
+            Paragraph::new(Line::from(line)).render(
+                Rect::new(area.x, y + offset as u16, area.width.saturating_sub(1), 1),
+                buffer,
+            );
+        }
+        hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
+        y += height;
     }
 }

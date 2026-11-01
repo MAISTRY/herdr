@@ -169,7 +169,7 @@ pub(super) fn render_agent_panel(
         if grouped { 0 } else { config.agents.row_gap },
         agent_scroll,
         hits,
-        |item| match item {
+        |item, width| match item {
             AgentPanelItem::Header(header) => {
                 if header.first {
                     1
@@ -177,7 +177,9 @@ pub(super) fn render_agent_panel(
                     2
                 }
             }
-            AgentPanelItem::Agent(row) => row.rows.len(),
+            AgentPanelItem::Agent(row) => {
+                agent_row_lines(row, config, width, if grouped { 2 } else { 0 }).len()
+            }
         },
         |buffer, rect, item, hits| match item {
             AgentPanelItem::Header(header) => {
@@ -363,7 +365,7 @@ pub(super) fn render_agent_list<T>(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
-    row_lines: impl Fn(&T) -> usize,
+    row_lines: impl Fn(&T, u16) -> usize,
     render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
     render_agent_list_with_gap(
@@ -389,7 +391,7 @@ fn render_agent_list_with_gap<T>(
     row_gap: u16,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
-    row_lines: impl Fn(&T) -> usize,
+    row_lines: impl Fn(&T, u16) -> usize,
     mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
 ) {
     let body = Rect::new(
@@ -418,7 +420,12 @@ fn render_agent_list_with_gap<T>(
 
     let row_heights = rows
         .iter()
-        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
+        // One column is kept for a possible scrollbar so heights match the drawn width.
+        .map(|row| {
+            row_lines(row, body.width.saturating_sub(1))
+                .max(1)
+                .min(u16::MAX as usize) as u16
+        })
         .collect::<Vec<_>>();
     let gaps = rows
         .iter()
@@ -573,6 +580,27 @@ pub(super) fn render_agent_row(
         None if row.focused => Style::default().bg(palette.active_row_bg),
         None => Style::default(),
     };
+    for (index, line) in agent_row_lines(row, config, rect.width, extra_indent)
+        .into_iter()
+        .take(rect.height as usize)
+        .enumerate()
+    {
+        Paragraph::new(Line::from(line)).style(row_style).render(
+            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            buffer,
+        );
+    }
+}
+
+/// Display lines of one agent entry at `width`: each configured row, wrapped
+/// (at spaces when possible) instead of cut off. Continuation lines are indented.
+pub(super) fn agent_row_lines(
+    row: &AgentRow,
+    config: &ClientShellConfig,
+    width: u16,
+    extra_indent: usize,
+) -> Vec<Vec<ratatui::text::Span<'static>>> {
+    let palette = &config.palette;
     let name_style = if row.focused {
         Style::default()
             .fg(palette.text)
@@ -596,10 +624,10 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
-    for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
+    let mut lines = Vec::new();
+    for (index, tokens) in rows.iter().enumerate() {
         let indent = (if index == 0 { 1 } else { 3 }) + extra_indent;
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
-        spans.extend(crate::ui::resolved_token_spans(
+        let spans = crate::ui::resolved_token_spans(
             tokens,
             icon,
             status_style,
@@ -607,13 +635,76 @@ pub(super) fn render_agent_row(
             secondary,
             secondary,
             palette,
-            rect.width.saturating_sub(indent as u16) as usize,
-        ));
-        Paragraph::new(Line::from(spans)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
-            buffer,
+            usize::from(u16::MAX),
         );
+        lines.extend(wrap_spans(spans, width as usize, indent, indent + 2));
     }
+    lines
+}
+
+/// Wrap styled text into lines no wider than `width`, breaking after a space
+/// when one is on the line. The first line is indented by `first_indent`
+/// columns and later lines by `rest_indent`.
+pub(super) fn wrap_spans(
+    spans: Vec<ratatui::text::Span<'static>>,
+    width: usize,
+    first_indent: usize,
+    rest_indent: usize,
+) -> Vec<Vec<ratatui::text::Span<'static>>> {
+    use unicode_width::UnicodeWidthChar;
+    let cells = spans
+        .iter()
+        .flat_map(|span| span.content.chars().map(move |ch| (ch, span.style)))
+        .collect::<Vec<_>>();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < cells.len() || lines.is_empty() {
+        let indent = if lines.is_empty() { first_indent } else { rest_indent };
+        let room = width.saturating_sub(indent).max(1);
+        // Skip spaces that would start a continuation line.
+        if !lines.is_empty() {
+            while start < cells.len() && cells[start].0 == ' ' {
+                start += 1;
+            }
+            if start >= cells.len() {
+                break;
+            }
+        }
+        let mut used = 0;
+        let mut end = start;
+        let mut last_space = None;
+        while end < cells.len() {
+            let w = cells[end].0.width().unwrap_or(0);
+            if used + w > room {
+                break;
+            }
+            if cells[end].0 == ' ' {
+                last_space = Some(end);
+            }
+            used += w;
+            end += 1;
+        }
+        if end < cells.len() {
+            if let Some(space) = last_space.filter(|space| *space > start) {
+                end = space + 1;
+            }
+            if end == start {
+                end += 1;
+            }
+        }
+        let mut line = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        for (ch, style) in &cells[start..end] {
+            match line.last_mut() {
+                Some(last) if last.style == *style && !last.content.is_empty() => {
+                    last.content.to_mut().push(*ch);
+                }
+                _ => line.push(ratatui::text::Span::styled(ch.to_string(), *style)),
+            }
+        }
+        lines.push(line);
+        start = end;
+    }
+    lines
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {

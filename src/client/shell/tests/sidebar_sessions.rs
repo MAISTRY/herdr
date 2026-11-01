@@ -150,3 +150,48 @@ fn dropping_a_session_on_its_own_space_does_nothing() {
     let drop = mouse(&mut state, MouseEventKind::Up(MouseButton::Left), own_space);
     assert!(drop.actions.is_empty(), "got {:?}", drop.actions);
 }
+
+fn line_text(line: &[ratatui::text::Span<'static>]) -> String {
+    line.iter().map(|span| span.content.as_ref()).collect()
+}
+
+#[test]
+fn wrap_spans_breaks_at_spaces_and_indents_continuations() {
+    let spans = vec![ratatui::text::Span::raw("Linear tickets QA review")];
+    let lines = super::super::agent_sidebar::wrap_spans(spans, 12, 1, 3);
+    let text = lines.iter().map(|line| line_text(line)).collect::<Vec<_>>();
+    assert_eq!(text, [" Linear ", "   tickets ", "   QA review"]);
+    for line in &text {
+        assert!(unicode_width::UnicodeWidthStr::width(line.as_str()) <= 12, "{line:?}");
+    }
+}
+
+#[test]
+fn wrap_spans_splits_a_word_longer_than_the_line() {
+    let spans = vec![ratatui::text::Span::raw("abcdefghij")];
+    let lines = super::super::agent_sidebar::wrap_spans(spans, 5, 0, 1);
+    let text = lines.iter().map(|line| line_text(line)).collect::<Vec<_>>();
+    assert_eq!(text, ["abcde", " fghi", " j"]);
+}
+
+#[test]
+fn long_session_names_wrap_onto_extra_lines_of_the_same_row() {
+    let mut projected = two_spaces();
+    projected.tabs[1].label = "a very long session name that cannot fit in the sidebar".into();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 40).expect("sidebar frame");
+
+    let rect = sidebar_tab(&state, "tab_2");
+    assert!(rect.height > 1, "long name should take several lines: {rect:?}");
+    let text = (rect.y..rect.bottom())
+        .map(|y| {
+            (rect.x..rect.right())
+                .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(text.contains("sidebar"), "end of the name is shown: {text:?}");
+}
