@@ -215,6 +215,7 @@ pub(crate) fn render_sidebar(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let workspace_area = render_sidebar_status_block(buffer, workspace_area, snapshot, palette);
     put_text(
         buffer,
         workspace_area.x,
@@ -324,7 +325,7 @@ pub(crate) fn render_sidebar(
             &sessions,
             entry.indented,
             config.status_indicators,
-            palette,
+            &space_palette(palette, space_color(snapshot, &workspace.workspace_id, palette)),
             body.width.saturating_sub(1),
         );
         let row_height = head_height
@@ -375,7 +376,7 @@ pub(crate) fn render_sidebar(
             selected,
             state.selected_workspace_id.is_some(),
             dragged,
-            palette,
+            &space_palette(palette, space_color(snapshot, &workspace.workspace_id, palette)),
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -861,13 +862,10 @@ fn space_session_lines(
                     .fg(palette.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(palette.text)
+                Style::default().fg(palette.overlay1)
             };
             let spans = vec![
-                Span::styled(
-                    format!("{base}{branch}"),
-                    Style::default().fg(palette.overlay1),
-                ),
+                Span::styled(format!("{base}{branch}"), Style::default().fg(palette.subtext0)),
                 Span::styled(
                     format!("{} ", status_icon(tab.agent_status, indicators)),
                     Style::default().fg(status_color(tab.agent_status, palette)),
@@ -906,5 +904,107 @@ fn render_space_sessions(
         }
         hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
         y += height;
+    }
+}
+
+/// Draws `sidebar:` status entries (system stats, usage...) at the top of the
+/// spaces section, wrapped, and returns the area left for the spaces list.
+fn render_sidebar_status_block(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    palette: &Palette,
+) -> Rect {
+    use ratatui::text::Span;
+    let prefix = super::tabs::SIDEBAR_SEGMENT_PREFIX;
+    let lines = snapshot
+        .tab_bar_right
+        .iter()
+        .filter_map(|segment| {
+            let text = segment.text.strip_prefix(prefix)?.trim();
+            (!text.is_empty()).then_some((text, segment.accent))
+        })
+        .flat_map(|(text, accent)| {
+            let style = if accent {
+                Style::default().fg(palette.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.text)
+            };
+            super::agent_sidebar::wrap_spans(
+                vec![Span::styled(text.to_string(), style)],
+                area.width.saturating_sub(1) as usize,
+                1,
+                3,
+            )
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() || area.height < 8 {
+        return area;
+    }
+    // Keep at least half of the section for the spaces list.
+    let shown = lines.len().min((area.height / 2) as usize) as u16;
+    for (offset, line) in lines.into_iter().take(shown as usize).enumerate() {
+        Paragraph::new(Line::from(line)).render(
+            Rect::new(area.x, area.y + offset as u16, area.width.saturating_sub(1), 1),
+            buffer,
+        );
+    }
+    let used = shown + 1; // one blank line before " spaces"
+    Rect::new(
+        area.x,
+        area.y.saturating_add(used),
+        area.width,
+        area.height.saturating_sub(used),
+    )
+}
+
+/// A distinct theme colour per space, in space order.
+pub(in crate::client::shell) fn space_color(
+    snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
+    palette: &Palette,
+) -> ratatui::style::Color {
+    let colors = [
+        palette.blue,
+        palette.mauve,
+        palette.green,
+        palette.peach,
+        palette.teal,
+        palette.yellow,
+        palette.red,
+    ];
+    let index = snapshot
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.workspace_id == workspace_id)
+        .unwrap_or(0);
+    colors[index % colors.len()]
+}
+
+/// Palette for drawing one space: its names use the space colour
+/// (`text`, `subtext0`) and its secondary text stays readable (`overlay1`).
+fn space_palette(palette: &Palette, color: ratatui::style::Color) -> Palette {
+    let mut space = palette.clone();
+    space.overlay1 = palette.text;
+    space.text = color;
+    space.subtext0 = color;
+    space
+}
+
+/// Mix `amount` (0..=1) of `color` into `base`; non-RGB colours fall back to `base`.
+pub(in crate::client::shell) fn tint(
+    color: ratatui::style::Color,
+    base: ratatui::style::Color,
+    amount: f32,
+) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match (color, base) {
+        (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) => {
+            let mix = |c: u8, base: u8| {
+                (f32::from(base) + (f32::from(c) - f32::from(base)) * amount).round() as u8
+            };
+            Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
+        }
+        _ => base,
     }
 }

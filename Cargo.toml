@@ -92,3 +92,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# Local quick builds: light optimisation, incremental. `cargo build --profile fast`
+[profile.fast]
+inherits = "release"
+opt-level = 1
+incremental = true
+codegen-units = 256

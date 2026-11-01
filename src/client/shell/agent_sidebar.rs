@@ -15,6 +15,8 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Colour of the agent's space; its background is tinted with it.
+    pub(super) space_color: Option<ratatui::style::Color>,
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -320,6 +322,11 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        space_color: Some(super::sidebar::space_color(
+            snapshot,
+            &agent.workspace_id,
+            &config.palette,
+        )),
     })
 }
 
@@ -330,10 +337,14 @@ pub(super) fn render_agent_row(
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
-    let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
+    let row_style = match row.space_color {
+        Some(color) => Style::default().bg(super::sidebar::tint(
+            color,
+            palette.sidebar_bg,
+            if row.focused { 0.30 } else { 0.14 },
+        )),
+        None if row.focused => Style::default().bg(palette.active_row_bg),
+        None => Style::default(),
     };
     for (index, line) in agent_row_lines(row, config, rect.width)
         .into_iter()

@@ -195,3 +195,36 @@ fn long_session_names_wrap_onto_extra_lines_of_the_same_row() {
         .join(" ");
     assert!(text.contains("sidebar"), "end of the name is shown: {text:?}");
 }
+
+#[test]
+fn sidebar_prefixed_status_entries_move_from_tab_bar_to_sidebar_top() {
+    let mut projected = two_spaces();
+    projected.tab_bar_right = vec![
+        crate::protocol::ClientShellTabStatusSegment {
+            text: "sidebar:CPU 12%   GPU 3%".into(),
+            accent: false,
+        },
+        crate::protocol::ClientShellTabStatusSegment {
+            text: "14:05".into(),
+            accent: false,
+        },
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 30).expect("frame");
+    let rows = (0..frame.height)
+        .map(|y| {
+            (0..frame.width)
+                .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let all = rows.join("\n");
+    assert!(all.contains("CPU 12%"), "stats shown somewhere:\n{all}");
+    assert!(!all.contains("sidebar:"), "prefix is never drawn:\n{all}");
+    assert!(all.contains("14:05"), "other entries stay in the tab bar:\n{all}");
+    let cpu_row = rows.iter().position(|row| row.contains("CPU 12%")).unwrap();
+    let spaces_row = rows.iter().position(|row| row.contains(" spaces")).unwrap();
+    assert!(cpu_row < spaces_row, "stats sit above the spaces list");
+}
