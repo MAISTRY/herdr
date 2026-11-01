@@ -843,7 +843,7 @@ fn render_space_sessions(
             y,
             area.right(),
             &format!("{base}{branch}"),
-            Style::default().fg(palette.overlay0),
+            Style::default().fg(palette.overlay1),
         );
         x = put_segment(
             buffer,
@@ -859,7 +859,13 @@ fn render_space_sessions(
             y,
             area.right().saturating_sub(1),
             &tab.label,
-            Style::default().fg(if tab.focused { palette.text } else { palette.subtext0 }),
+            if tab.focused {
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.text)
+            },
         );
         hits.sidebar_tabs.push((row, tab.tab_id.clone()));
     }
