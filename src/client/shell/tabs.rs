@@ -296,7 +296,7 @@ fn render_tab_bar_status(
                 .bg(palette.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(palette.overlay1).bg(palette.panel_bg)
+            Style::default().fg(palette.text).bg(palette.panel_bg)
         };
         put_text(buffer, x, area.y, width, &segment.text, style);
         x = x.saturating_add(width);

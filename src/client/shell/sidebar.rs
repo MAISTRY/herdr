@@ -844,6 +844,44 @@ pub(in crate::client::shell) fn space_sessions<'a>(
         .filter(move |tab| tab.workspace_id == workspace_id)
 }
 
+/// Name shown for a session row: the tab's custom label, else its agent's
+/// stripped terminal title (focused agent first), else the tab number when the
+/// space has more than one tab. A lone unnamed tab shows only its status icon.
+pub(in crate::client::shell) fn session_label(
+    snapshot: &ClientShellSnapshot,
+    tab: &crate::protocol::ClientShellTab,
+    tabs_in_space: usize,
+) -> String {
+    if tab.custom_label {
+        return tab.label.clone();
+    }
+    fn title(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+        agent
+            .terminal_title_stripped
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+    }
+    let agents = || {
+        snapshot
+            .agents
+            .iter()
+            .filter(|agent| agent.tab_id == tab.tab_id)
+    };
+    if let Some(title) = agents()
+        .filter(|agent| agent.focused)
+        .find_map(title)
+        .or_else(|| agents().find_map(title))
+    {
+        return title.to_string();
+    }
+    if tabs_in_space > 1 {
+        tab.number.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Display lines for each session row of one space, wrapped to `width`. The
 /// prefix, status icon and start of the name stay on the first line; only the name
 /// wraps, with continuation lines indented under where the name starts. A session
@@ -876,7 +914,10 @@ pub(in crate::client::shell) fn space_session_lines(
             let icon = format!("{} ", status_icon(tab.agent_status, indicators));
             let prefix_width = base.len() + 2 + display_width(&icon);
             let name = super::agent_sidebar::wrap_spans(
-                vec![Span::styled(tab.label.clone(), label_style)],
+                vec![Span::styled(
+                    session_label(snapshot, tab, sessions.len()),
+                    label_style,
+                )],
                 width.saturating_sub(prefix_width).max(1),
                 0,
                 0,

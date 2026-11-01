@@ -362,3 +362,30 @@ fn sessions_with_several_agents_list_each_agent_pane() {
     single.agents.push(test_agent("pane_1", "tab_1", "ws_1", "orchestrator"));
     assert_eq!(session_lines(&single, 0, 40).len(), 1);
 }
+
+#[test]
+fn session_label_prefers_custom_label_then_terminal_title_then_number() {
+    use super::super::sidebar::session_label;
+    let mut projected = two_spaces();
+    // Custom label wins.
+    assert_eq!(session_label(&projected, &projected.tabs[1], 1), "review");
+
+    // Lone unnamed tab with no title shows nothing; with siblings it shows its number.
+    let tab = projected.tabs[0].clone();
+    assert_eq!(session_label(&projected, &tab, 1), "");
+    assert_eq!(session_label(&projected, &tab, 2), tab.number.to_string());
+
+    // A blank title is ignored; the focused agent's title wins over others.
+    let mut blank = test_agent("pane_1", "tab_1", "ws_1", "a");
+    blank.terminal_title_stripped = Some("   ".into());
+    projected.agents.push(blank);
+    assert_eq!(session_label(&projected, &tab, 1), "");
+    let mut other = test_agent("pane_3", "tab_1", "ws_1", "b");
+    other.terminal_title_stripped = Some("other title".into());
+    projected.agents.push(other);
+    let mut focused = test_agent("pane_4", "tab_1", "ws_1", "c");
+    focused.terminal_title_stripped = Some("fix login".into());
+    focused.focused = true;
+    projected.agents.push(focused);
+    assert_eq!(session_label(&projected, &tab, 2), "fix login");
+}
