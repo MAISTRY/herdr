@@ -8,7 +8,7 @@
 > - **Drag fallback:** if the server rejects `pane.move` from the TUI, the drag uses the public API instead.
 > - **Fast build profile:** `cargo build --profile fast` gives quicker local rebuilds (opt-level 1, incremental).
 >
-> **Extras kept outside this repo** (in `~/.herdr/kit`)
+> **Extras** (run from `~/.herdr/kit`; a copy is kept in [`kit/`](kit/) here)
 > - `focus-space.js`: jumps to the Nth space, or the next/previous one (a Windows port of the kit's `focus-space.sh`).
 > - `herdr-subagents.js`: a Claude Code hook that shows running subagents in herdr's agents panel.
 > - `claude-worktrees` plugin: shows each `<repo>/.claude/worktrees/*` worktree as its own space, nested under its repo's space.

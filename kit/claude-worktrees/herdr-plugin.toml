@@ -1,0 +1,23 @@
+id = "kit.claude-worktrees"
+name = "Claude worktrees"
+version = "0.1.0"
+min_herdr_version = "0.9.5"
+description = "Show every <repo>/.claude/worktrees/* git worktree as its own space nested under its repo's space."
+platforms = ["windows", "macos", "linux"]
+
+[[startup]]
+command = ["node", "sync.js"]
+
+[[events]]
+on = "workspace.focused"
+command = ["node", "sync.js"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["node", "sync.js"]
+
+[[actions]]
+id = "sync"
+title = "Sync .claude worktrees"
+contexts = ["workspace"]
+command = ["node", "sync.js"]

@@ -1,0 +1,607 @@
+diff --git a/src/client/shell/actions.rs b/src/client/shell/actions.rs
+index 83819b0..2219321 100644
+--- a/src/client/shell/actions.rs
++++ b/src/client/shell/actions.rs
+@@ -926,7 +926,22 @@ impl ClientShellState {
+                     .iter()
+                     .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
+                 {
+-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
++                    use super::agent_sidebar::AgentPanelItem;
++                    let items = super::agent_sidebar::agent_panel_items(
++                        snapshot,
++                        &self.config,
++                        &self.collapsed_groups,
++                    );
++                    let index = items.iter().position(|item| {
++                        matches!(item, AgentPanelItem::Agent(row) if row.pane_id == pane_id)
++                    }).or_else(|| {
++                        let agent = snapshot.agents.iter().find(|agent| agent.pane_id == pane_id)?;
++                        items.iter().position(|item| {
++                            matches!(item, AgentPanelItem::Header(header)
++                                if snapshot.workspaces[header.workspace_index].workspace_id == agent.workspace_id)
++                        })
++                    }).unwrap_or(next);
++                    self.agent_scroll = index.min(self.hits.agent_max_scroll);
+                 }
+                 Some(Method::PaneFocus(PaneTarget { pane_id }))
+             }
+diff --git a/src/client/shell/agent_sidebar.rs b/src/client/shell/agent_sidebar.rs
+index e43ab8c..9073ab5 100644
+--- a/src/client/shell/agent_sidebar.rs
++++ b/src/client/shell/agent_sidebar.rs
+@@ -1,4 +1,4 @@
+-use std::collections::HashMap;
++use std::collections::{HashMap, HashSet};
+
+ use ratatui::{
+     buffer::Buffer,
+@@ -12,11 +12,97 @@ use super::*;
+
+ pub(super) struct AgentRow {
+     pub(super) pane_id: String,
++    pub(super) workspace_id: String,
+     pub(super) status: crate::api::schema::AgentStatus,
+     pub(super) focused: bool,
+     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+ }
+
++pub(super) struct AgentGroupHeader {
++    pub(super) key: String,
++    pub(super) workspace_index: usize,
++    pub(super) foldable: bool,
++    pub(super) collapsed: bool,
++    pub(super) status: crate::api::schema::AgentStatus,
++    pub(super) count: usize,
++    pub(super) first: bool,
++}
++
++pub(super) enum AgentPanelItem {
++    Header(AgentGroupHeader),
++    Agent(AgentRow),
++}
++
++pub(super) fn agent_group_key(workspace: &ClientShellWorkspace) -> String {
++    let worktree_key = workspace
++        .worktree
++        .as_ref()
++        .map(|w| w.key.as_str())
++        .unwrap_or("");
++    format!("agents:{}\u{1f}{}", workspace.label, worktree_key)
++}
++
++pub(super) fn agent_panel_items(
++    snapshot: &ClientShellSnapshot,
++    config: &ClientShellConfig,
++    collapsed_groups: &HashSet<String>,
++) -> Vec<AgentPanelItem> {
++    let rows = agent_rows(snapshot, config, None);
++    if config.agent_panel_sort != crate::config::AgentPanelSortConfig::Spaces
++        || snapshot.agent_view_label.is_some()
++    {
++        return rows.into_iter().map(AgentPanelItem::Agent).collect();
++    }
++    let mut group_indices = HashMap::<String, usize>::new();
++    let mut groups = Vec::<Vec<AgentRow>>::new();
++    for row in rows {
++        let index = *group_indices
++            .entry(row.workspace_id.clone())
++            .or_insert_with(|| {
++                groups.push(Vec::new());
++                groups.len() - 1
++            });
++        groups[index].push(row);
++    }
++    let mut items = Vec::new();
++    let mut first = true;
++    for rows in groups {
++        let Some(workspace_index) = snapshot
++            .workspaces
++            .iter()
++            .position(|workspace| workspace.workspace_id == rows[0].workspace_id)
++        else {
++            items.extend(rows.into_iter().map(AgentPanelItem::Agent));
++            continue;
++        };
++        let key = agent_group_key(&snapshot.workspaces[workspace_index]);
++        // A space with one agent has nothing to fold away, so it always shows its agent.
++        let foldable = rows.len() > 1;
++        let collapsed = foldable && collapsed_groups.contains(&key);
++        let status = rows
++            .iter()
++            .map(|row| row.status)
++            .max_by_key(|status| status_priority(*status))
++            .unwrap_or(crate::api::schema::AgentStatus::Unknown);
++        items.push(AgentPanelItem::Header(AgentGroupHeader {
++            key,
++            workspace_index,
++            foldable,
++            collapsed,
++            status,
++            count: rows.len(),
++            first,
++        }));
++        first = false;
++        items.extend(
++            rows.into_iter()
++                .filter(|row| !collapsed || row.focused)
++                .map(AgentPanelItem::Agent),
++        );
++    }
++    items
++}
++
+ pub(super) fn ordered_agent_pane_ids(
+     snapshot: &ClientShellSnapshot,
+     sort: crate::config::AgentPanelSortConfig,
+@@ -54,6 +140,7 @@ pub(super) fn render_agent_panel(
+     area: Rect,
+     snapshot: &ClientShellSnapshot,
+     config: &ClientShellConfig,
++    collapsed_groups: &HashSet<String>,
+     agent_scroll: &mut usize,
+     hits: &mut ShellHitMap,
+ ) {
+@@ -67,8 +154,10 @@ pub(super) fn render_agent_panel(
+         return;
+     }
+
+-    let rows = agent_rows(snapshot, config, None);
+-    render_agent_list(
++    let grouped = config.agent_panel_sort == crate::config::AgentPanelSortConfig::Spaces
++        && snapshot.agent_view_label.is_none();
++    let rows = agent_panel_items(snapshot, config, collapsed_groups);
++    render_agent_list_with_gap(
+         buffer,
+         area,
+         &rows,
+@@ -77,16 +166,131 @@ pub(super) fn render_agent_panel(
+             .as_ref()
+             .map(|_| " no matching agents"),
+         config,
++        if grouped { 0 } else { config.agents.row_gap },
+         agent_scroll,
+         hits,
+-        |row| row.rows.len(),
+-        |buffer, rect, row, hits| {
+-            hits.agents.push((rect, row.pane_id.clone()));
+-            render_agent_row(buffer, rect, row, config);
++        |item| match item {
++            AgentPanelItem::Header(header) => {
++                if header.first {
++                    1
++                } else {
++                    2
++                }
++            }
++            AgentPanelItem::Agent(row) => row.rows.len(),
++        },
++        |buffer, rect, item, hits| match item {
++            AgentPanelItem::Header(header) => {
++                let label_rect =
++                    Rect::new(rect.x, rect.y + u16::from(!header.first), rect.width, 1);
++                if label_rect.y < rect.bottom() {
++                    if let Some(colour) = super::sidebar::space_colour(
++                        snapshot,
++                        &snapshot.workspaces[header.workspace_index],
++                        &config.spaces,
++                    ) {
++                        buffer.set_style(
++                            label_rect,
++                            Style::default().bg(super::sidebar::space_tint(
++                                colour,
++                                false,
++                                &config.palette,
++                            )),
++                        );
++                    }
++                    render_agent_group_header(buffer, label_rect, header, snapshot, config);
++                    if header.foldable {
++                        hits.agent_group_headers
++                            .push((label_rect, header.key.clone()));
++                    }
++                }
++            }
++            AgentPanelItem::Agent(row) => {
++                hits.agents.push((rect, row.pane_id.clone()));
++                let colour = snapshot
++                    .workspaces
++                    .iter()
++                    .find(|workspace| workspace.workspace_id == row.workspace_id)
++                    .and_then(|workspace| {
++                        super::sidebar::space_colour(snapshot, workspace, &config.spaces)
++                    });
++                render_agent_row(
++                    buffer,
++                    rect,
++                    row,
++                    config,
++                    if grouped { 2 } else { 0 },
++                    colour,
++                );
++            }
+         },
+     );
+ }
+
++fn render_agent_group_header(
++    buffer: &mut Buffer,
++    rect: Rect,
++    header: &AgentGroupHeader,
++    snapshot: &ClientShellSnapshot,
++    config: &ClientShellConfig,
++) {
++    let workspace = &snapshot.workspaces[header.workspace_index];
++    let palette = &config.palette;
++    let mut tokens =
++        super::sidebar::workspace_rows(workspace, header.status, false, &config.spaces)
++            .into_iter()
++            .next()
++            .unwrap_or_default();
++    if !header.collapsed {
++        tokens.retain(|token| {
++            !matches!(
++                token.kind,
++                crate::ui::ResolvedTokenKind::StateIcon
++                    | crate::ui::ResolvedTokenKind::StateText(_)
++            )
++        });
++    }
++    let name_style = Style::default()
++        .fg(palette.text)
++        .add_modifier(Modifier::BOLD);
++    let status_style = Style::default().fg(status_color(header.status, palette));
++    let width = rect
++        .width
++        .saturating_sub(if header.foldable { 4 } else { 2 });
++    let mut spans = if tokens.is_empty() {
++        vec![ratatui::text::Span::styled(
++            workspace.label.clone(),
++            name_style,
++        )]
++    } else {
++        crate::ui::resolved_token_spans(
++            &tokens,
++            (
++                status_icon(header.status, config.status_indicators),
++                status_style,
++            ),
++            status_style,
++            name_style,
++            Style::default().fg(palette.overlay0),
++            Style::default().fg(palette.overlay1),
++            palette,
++            width as usize,
++        )
++    };
++    if header.collapsed {
++        spans.push(ratatui::text::Span::styled(
++            format!(" · {}", header.count),
++            Style::default()
++                .fg(palette.overlay0)
++                .add_modifier(Modifier::DIM),
++        ));
++    }
++    Paragraph::new(Line::from(spans)).render(Rect::new(rect.x + 1, rect.y, width, 1), buffer);
++    if header.foldable {
++        super::sidebar::render_fold_toggle(buffer, rect, header.collapsed, palette);
++    }
++}
++
+ pub(super) fn render_agent_panel_header(
+     buffer: &mut Buffer,
+     area: Rect,
+@@ -160,6 +364,32 @@ pub(super) fn render_agent_list<T>(
+     agent_scroll: &mut usize,
+     hits: &mut ShellHitMap,
+     row_lines: impl Fn(&T) -> usize,
++    render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
++) {
++    render_agent_list_with_gap(
++        buffer,
++        area,
++        rows,
++        empty_message,
++        config,
++        config.agents.row_gap,
++        agent_scroll,
++        hits,
++        row_lines,
++        render_row,
++    );
++}
++
++fn render_agent_list_with_gap<T>(
++    buffer: &mut Buffer,
++    area: Rect,
++    rows: &[T],
++    empty_message: Option<&str>,
++    config: &ClientShellConfig,
++    row_gap: u16,
++    agent_scroll: &mut usize,
++    hits: &mut ShellHitMap,
++    row_lines: impl Fn(&T) -> usize,
+     mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
+ ) {
+     let body = Rect::new(
+@@ -193,13 +423,15 @@ pub(super) fn render_agent_list<T>(
+     let gaps = rows
+         .iter()
+         .enumerate()
+-        .map(|(index, _)| {
+-            if index + 1 < rows.len() {
+-                config.agents.row_gap
+-            } else {
+-                0
+-            }
+-        })
++        .map(
++            |(index, _)| {
++                if index + 1 < rows.len() {
++                    row_gap
++                } else {
++                    0
++                }
++            },
++        )
+         .collect::<Vec<_>>();
+     let metrics =
+         super::scroll::list_scroll_metrics(&row_heights, &gaps, body.height, *agent_scroll);
+@@ -220,11 +452,7 @@ pub(super) fn render_agent_list<T>(
+         render_row(buffer, rect, row, hits);
+         y = y
+             .saturating_add(height)
+-            .saturating_add(if index + 1 < rows.len() {
+-                config.agents.row_gap
+-            } else {
+-                0
+-            });
++            .saturating_add(if index + 1 < rows.len() { row_gap } else { 0 });
+     }
+
+     if show_scrollbar {
+@@ -269,9 +497,19 @@ pub(super) fn agent_row(
+         .iter()
+         .filter(|candidate| candidate.workspace_id == agent.workspace_id)
+         .count();
++    // A tab herdr numbered itself says nothing about the agent in it, so the agent's own
++    // terminal title (a Claude session's topic) stands in, and the number only as a last resort.
+     let tab_label = tab
+-        .filter(|tab| tab_count > 1 || tab.custom_label)
+-        .map(|tab| tab.label.as_str());
++        .filter(|tab| tab.custom_label)
++        .map(|tab| tab.label.as_str())
++        .or(agent
++            .terminal_title_stripped
++            .as_deref()
++            .filter(|title| !title.is_empty()))
++        .or_else(|| {
++            tab.filter(|_| tab_count > 1)
++                .map(|tab| tab.label.as_str())
++        });
+     let agent_label = agent
+         .display_agent
+         .as_deref()
+@@ -312,6 +550,7 @@ pub(super) fn agent_row(
+     );
+     Some(AgentRow {
+         pane_id: agent.pane_id.clone(),
++        workspace_id: agent.workspace_id.clone(),
+         status: agent.agent_status,
+         focused: agent.focused,
+         rows,
+@@ -323,12 +562,16 @@ pub(super) fn render_agent_row(
+     rect: Rect,
+     row: &AgentRow,
+     config: &ClientShellConfig,
++    extra_indent: usize,
++    space_colour: Option<ratatui::style::Color>,
+ ) {
+     let palette = &config.palette;
+-    let row_style = if row.focused {
+-        Style::default().bg(palette.active_row_bg)
+-    } else {
+-        Style::default()
++    let row_style = match space_colour {
++        Some(colour) => {
++            Style::default().bg(super::sidebar::space_tint(colour, row.focused, palette))
++        }
++        None if row.focused => Style::default().bg(palette.active_row_bg),
++        None => Style::default(),
+     };
+     let name_style = if row.focused {
+         Style::default()
+@@ -354,7 +597,7 @@ pub(super) fn render_agent_row(
+         row.rows.clone()
+     };
+     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
+-        let indent = if index == 0 { 1 } else { 3 };
++        let indent = (if index == 0 { 1 } else { 3 }) + extra_indent;
+         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+         spans.extend(crate::ui::resolved_token_spans(
+             tokens,
+diff --git a/src/client/shell/endpoint_agents.rs b/src/client/shell/endpoint_agents.rs
+index b56b41f..6700478 100644
+--- a/src/client/shell/endpoint_agents.rs
++++ b/src/client/shell/endpoint_agents.rs
+@@ -72,7 +72,7 @@ pub(super) fn render_expanded(
+         hits,
+         |row| row.agent.rows.len(),
+         |buffer, rect, row, hits| {
+-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
++            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, 0, None);
+             if row.stale {
+                 buffer.set_style(
+                     rect,
+diff --git a/src/client/shell/mouse.rs b/src/client/shell/mouse.rs
+index 8e873d6..1d63bca 100644
+--- a/src/client/shell/mouse.rs
++++ b/src/client/shell/mouse.rs
+@@ -2141,6 +2141,18 @@ impl ClientShellState {
+                     self.tab_press = Some(tab_press);
+                     return;
+                 }
++                let agent_group = self
++                    .hits
++                    .agent_group_headers
++                    .iter()
++                    .find(|(rect, _)| super::contains(*rect, point))
++                    .map(|(_, key)| key.clone());
++                if let Some(key) = agent_group {
++                    self.toggle_collapsed_group(&ClientEndpointId::Local, key);
++                    outcome.repaint = true;
++                    self.persist_chrome_preferences(outcome);
++                    return;
++                }
+                 if self.handle_endpoint_agent_click(point, outcome) {
+                     return;
+                 }
+diff --git a/src/client/shell/sidebar.rs b/src/client/shell/sidebar.rs
+index 46c3a1a..2701a11 100644
+--- a/src/client/shell/sidebar.rs
++++ b/src/client/shell/sidebar.rs
+@@ -318,6 +318,11 @@ pub(crate) fn render_sidebar(
+             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+         } else if dragged {
+             buffer.set_style(rect, Style::default().bg(palette.surface1));
++        } else if let Some(colour) = space_colour(snapshot, workspace, &config.spaces) {
++            buffer.set_style(
++                rect,
++                Style::default().bg(space_tint(colour, workspace.focused, palette)),
++            );
+         } else if workspace.focused {
+             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+         }
+@@ -435,6 +440,7 @@ pub(crate) fn render_sidebar(
+         detail_area,
+         snapshot,
+         config,
++        state.collapsed_groups,
+         state.agent_scroll,
+         hits,
+     );
+@@ -609,25 +615,87 @@ pub(in crate::client::shell) fn render_parent_group_toggle(
+     palette: &Palette,
+ ) -> Option<(Rect, String)> {
+     let key = parent_group_key(snapshot, workspace_index)?;
+-    let toggle = Rect::new(
+-        workspace_rect.right().saturating_sub(1),
+-        workspace_rect.y,
+-        1,
+-        1,
++    let toggle = render_fold_toggle(
++        buffer,
++        workspace_rect,
++        collapsed_groups.contains(&key),
++        palette,
+     );
++    Some((toggle, key))
++}
++
++/// The colour a space's name wears in the spaces panel, which also tints that space's rows in
++/// both panels. A worktree space takes its repo space's colour.
++pub(in crate::client::shell) fn space_colour(
++    snapshot: &ClientShellSnapshot,
++    workspace: &ClientShellWorkspace,
++    config: &SpacesSidebarConfig,
++) -> Option<ratatui::style::Color> {
++    let owner = workspace
++        .worktree
++        .as_ref()
++        .filter(|worktree| worktree.is_linked_worktree)
++        .and_then(|worktree| {
++            snapshot.workspaces.iter().find(|candidate| {
++                candidate.worktree.as_ref().is_some_and(|member| {
++                    member.key == worktree.key && !member.is_linked_worktree
++                })
++            })
++        })
++        .unwrap_or(workspace);
++    workspace_rows(owner, owner.agent_status, false, config)
++        .into_iter()
++        .flatten()
++        .find(|token| matches!(token.kind, crate::ui::ResolvedTokenKind::Workspace(_)))
++        .and_then(|token| token.style.fg)
++        .map(|colour| colour.ratatui())
++}
++
++/// A row background tinted by `colour` over the sidebar: a quiet wash for the space's rows,
++/// twice as strong for the focused one.
++pub(in crate::client::shell) fn space_tint(
++    colour: ratatui::style::Color,
++    focused: bool,
++    palette: &Palette,
++) -> ratatui::style::Color {
++    use ratatui::style::Color;
++    let amount = if focused { 0.24 } else { 0.12 };
++    let Color::Rgb(r, g, b) = colour else {
++        return palette.active_row_bg;
++    };
++    let (br, bg, bb) = match palette.sidebar_bg {
++        Color::Rgb(r, g, b) => (r, g, b),
++        _ => (0, 0, 0),
++    };
++    let mix = |over: u8, base: u8| (base as f32 + (over as f32 - base as f32) * amount) as u8;
++    Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
++}
++
++/// Fold chevrons for every collapsible group in the sidebar: the Octicons pair, whose right and
++/// down glyphs Ghostty draws at one size, mirror images of each other. The Material pair drew
++/// the closed chevron half again taller than the open one.
++pub(in crate::client::shell) const FOLD_CLOSED: &str = "\u{f460}";
++pub(in crate::client::shell) const FOLD_OPEN: &str = "\u{f47c}";
++
++/// Draws a fold chevron and a blank cell in the last two cells of `row`, and returns both
++/// cells as the toggle's click target.
++pub(in crate::client::shell) fn render_fold_toggle(
++    buffer: &mut Buffer,
++    row: Rect,
++    collapsed: bool,
++    palette: &Palette,
++) -> Rect {
++    let toggle = Rect::new(row.right().saturating_sub(2), row.y, row.width.min(2), 1);
+     put_text(
+         buffer,
+         toggle.x,
+         toggle.y,
+         toggle.width,
+-        if collapsed_groups.contains(&key) {
+-            "▸"
+-        } else {
+-            "▾"
+-        },
+-        Style::default().fg(palette.accent),
++        &format!("{} ", if collapsed { FOLD_CLOSED } else { FOLD_OPEN }),
++        // A quiet dark gray, the tone of the header's agent count, not the accent blue.
++        Style::default().fg(palette.overlay0),
+     );
+-    Some((toggle, key))
++    toggle
+ }
+
+ pub(in crate::client::shell) fn displayed_workspace_status(
+diff --git a/src/client/shell/state.rs b/src/client/shell/state.rs
+index 5a73292..ebdfba0 100644
+--- a/src/client/shell/state.rs
++++ b/src/client/shell/state.rs
+@@ -94,6 +94,7 @@ pub(super) struct ShellHitMap {
+     pub(super) popup: Option<PaneHit>,
+     pub(super) pane_splits: Vec<PaneSplitHit>,
+     pub(super) agents: Vec<(Rect, String)>,
++    pub(super) agent_group_headers: Vec<(Rect, String)>,
+     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
+     pub(super) agent_body: Rect,
+     pub(super) agent_scrollbar: Rect,
+diff --git a/src/client/shell/tabs.rs b/src/client/shell/tabs.rs
+index 3fdcf7d..682e4d6 100644
+--- a/src/client/shell/tabs.rs
++++ b/src/client/shell/tabs.rs
+@@ -284,7 +284,7 @@ fn render_tab_bar_status(
+                 .bg(palette.accent)
+                 .add_modifier(Modifier::BOLD)
+         } else {
+-            Style::default().fg(palette.overlay1).bg(palette.panel_bg)
++            Style::default().fg(palette.text).bg(palette.panel_bg)
+         };
+         put_text(buffer, x, area.y, width, &segment.text, style);
+         x = x.saturating_add(width);
