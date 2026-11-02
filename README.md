@@ -1,6 +1,6 @@
 # herdr
 
-> **This fork is my Windows setup of herdr.** The changes live on the `kit` branch, built on herdr v0.9.5.
+> **This fork is my Windows setup of herdr.** The changes live on the `kit` branch, kept on top of the latest herdr release.
 >
 > **Changes in this fork**
 > - **Agents grouped by space:** the agents list shows agents under their space, with foldable headers, a tint per space, and a set tab bar text colour.
@@ -13,7 +13,7 @@
 > - `herdr-subagents.js`: a Claude Code hook that shows running subagents in herdr's agents panel.
 > - `claude-worktrees` plugin: shows each `<repo>/.claude/worktrees/*` worktree as its own space, nested under its repo's space.
 >
-> **Updating:** don't run `herdr update`. It replaces the custom binary with the stock release, which drops these changes. Rebase `kit` onto the new release tag instead, then rebuild.
+> **Updating:** don't run `herdr update`. It replaces the custom binary with the stock release, which drops these changes. Instead, a daily Windows scheduled task (`herdr-auto-update`, script in `~/.herdr/kit/auto-update`) watches for new herdr releases. When one comes out, it rebases `kit` onto it, builds, runs the tests, installs the new exe and pushes `kit` here. If the rebase conflicts or the build or tests fail, it rolls back and sends a notification instead.
 
 
 <p align="center">
