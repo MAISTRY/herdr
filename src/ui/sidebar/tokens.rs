@@ -621,7 +621,13 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
-                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
+                ResolvedToken::new(
+                    ResolvedTokenKind::Workspace("feature".into()),
+                    SidebarTokenStyle {
+                        fg: Some(auto_space_colour("feature")),
+                        ..SidebarTokenStyle::default()
+                    },
+                ),
             ]]
         );
     }
