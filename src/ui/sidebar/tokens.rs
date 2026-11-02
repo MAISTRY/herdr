@@ -1,6 +1,6 @@
 use crate::config::{
-    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
-    SpacesSidebarConfig,
+    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenColor, SidebarTokenStyle,
+    SpaceSidebarToken, SpacesSidebarConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,15 +166,41 @@ pub(crate) fn space_rows(
                             .map(ResolvedTokenKind::Custom),
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
-                    let style = kind
+                    let mut style = kind
                         .text_value()
                         .map_or(Some(style), |value| configured.style_for_value(value))?;
+                    if let ResolvedTokenKind::Workspace(name) = &kind {
+                        style.fg.get_or_insert_with(|| auto_space_colour(name));
+                    }
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
             (!resolved.is_empty()).then_some(resolved)
         })
         .collect()
+}
+
+/// Tokyo Night accents handed out to spaces that no config rule colours.
+const AUTO_SPACE_COLOURS: [(u8, u8, u8); 9] = [
+    (0x7a, 0xa2, 0xf7),
+    (0xbb, 0x9a, 0xf7),
+    (0x9e, 0xce, 0x6a),
+    (0xf7, 0x76, 0x8e),
+    (0xe0, 0xaf, 0x68),
+    (0x7d, 0xcf, 0xff),
+    (0x73, 0xda, 0xca),
+    (0xff, 0x9e, 0x64),
+    (0x2a, 0xc3, 0xde),
+];
+
+/// A stable colour for a space name: FNV-1a hash into the palette, so the same
+/// name always gets the same colour and renaming re-picks.
+fn auto_space_colour(name: &str) -> SidebarTokenColor {
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    let (r, g, b) = AUTO_SPACE_COLOURS[(hash % AUTO_SPACE_COLOURS.len() as u64) as usize];
+    SidebarTokenColor::rgb(r, g, b)
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
@@ -336,6 +362,47 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             );
             assert_eq!(spaces[0][0].style.dim, (value == "20").then_some(true));
         }
+    }
+
+    fn workspace_fg(config: &str, name: &str) -> Option<ratatui::style::Color> {
+        let config: SpacesSidebarConfig = toml::from_str(config).unwrap();
+        let tokens = std::collections::HashMap::new();
+        let rows = space_rows(
+            &config,
+            SpaceTokenContext {
+                workspace: name,
+                branch: None,
+                state_text: "idle",
+                ahead_behind: None,
+                suppress_git_details: false,
+                tokens: &tokens,
+            },
+        );
+        rows[0][0].style.fg.map(|colour| colour.ratatui())
+    }
+
+    #[test]
+    fn unmatched_space_gets_deterministic_palette_colour() {
+        let config = r#"rows = [["workspace"]]"#;
+        let first = workspace_fg(config, "Projects").expect("auto colour");
+        assert_eq!(Some(first), workspace_fg(config, "Projects"));
+        let palette = AUTO_SPACE_COLOURS.map(|(r, g, b)| ratatui::style::Color::Rgb(r, g, b));
+        assert!(palette.contains(&first));
+        let others: std::collections::HashSet<_> = ["a", "b", "c", "d", "e", "f"]
+            .iter()
+            .filter_map(|name| workspace_fg(config, name))
+            .collect();
+        assert!(others.len() > 1);
+    }
+
+    #[test]
+    fn explicit_rule_beats_auto_space_colour() {
+        let config = r##"rows = [[{ token = "workspace", rules = [{ equals = "Projects", fg = "#010203" }] }]]"##;
+        assert_eq!(
+            workspace_fg(config, "Projects"),
+            Some(ratatui::style::Color::Rgb(1, 2, 3))
+        );
+        assert!(workspace_fg(config, "Other").is_some());
     }
 
     #[test]
