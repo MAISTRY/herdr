@@ -2141,6 +2141,18 @@ impl ClientShellState {
                     self.tab_press = Some(tab_press);
                     return;
                 }
+                let agent_group = self
+                    .hits
+                    .agent_group_headers
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, key)| key.clone());
+                if let Some(key) = agent_group {
+                    self.toggle_collapsed_group(&ClientEndpointId::Local, key);
+                    outcome.repaint = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
                 if self.handle_endpoint_agent_click(point, outcome) {
                     return;
                 }

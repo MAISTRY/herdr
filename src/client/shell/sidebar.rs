@@ -318,6 +318,11 @@ pub(crate) fn render_sidebar(
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
+        } else if let Some(colour) = space_colour(snapshot, workspace, &config.spaces) {
+            buffer.set_style(
+                rect,
+                Style::default().bg(space_tint(colour, workspace.focused, palette)),
+            );
         } else if workspace.focused {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
@@ -435,6 +440,7 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        state.collapsed_groups,
         state.agent_scroll,
         hits,
     );
@@ -609,25 +615,86 @@ pub(in crate::client::shell) fn render_parent_group_toggle(
     palette: &Palette,
 ) -> Option<(Rect, String)> {
     let key = parent_group_key(snapshot, workspace_index)?;
-    let toggle = Rect::new(
-        workspace_rect.right().saturating_sub(1),
-        workspace_rect.y,
-        1,
-        1,
+    let toggle = render_fold_toggle(
+        buffer,
+        workspace_rect,
+        collapsed_groups.contains(&key),
+        palette,
     );
+    Some((toggle, key))
+}
+
+/// The colour a space's name wears in the spaces panel, which also tints that space's rows in
+/// both panels. A worktree space takes its repo space's colour.
+pub(in crate::client::shell) fn space_colour(
+    snapshot: &ClientShellSnapshot,
+    workspace: &ClientShellWorkspace,
+    config: &SpacesSidebarConfig,
+) -> Option<ratatui::style::Color> {
+    let owner = workspace
+        .worktree
+        .as_ref()
+        .filter(|worktree| worktree.is_linked_worktree)
+        .and_then(|worktree| {
+            snapshot.workspaces.iter().find(|candidate| {
+                candidate.worktree.as_ref().is_some_and(|member| {
+                    member.key == worktree.key && !member.is_linked_worktree
+                })
+            })
+        })
+        .unwrap_or(workspace);
+    workspace_rows(owner, owner.agent_status, false, config)
+        .into_iter()
+        .flatten()
+        .find(|token| matches!(token.kind, crate::ui::ResolvedTokenKind::Workspace(_)))
+        .and_then(|token| token.style.fg)
+        .map(|colour| colour.ratatui())
+}
+
+/// A row background tinted by `colour` over the sidebar: a quiet wash for the space's rows,
+/// twice as strong for the focused one.
+pub(in crate::client::shell) fn space_tint(
+    colour: ratatui::style::Color,
+    focused: bool,
+    palette: &Palette,
+) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    let amount = if focused { 0.24 } else { 0.12 };
+    let Color::Rgb(r, g, b) = colour else {
+        return palette.active_row_bg;
+    };
+    let (br, bg, bb) = match palette.sidebar_bg {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    };
+    let mix = |over: u8, base: u8| (base as f32 + (over as f32 - base as f32) * amount) as u8;
+    Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
+}
+
+/// Fold chevrons for every collapsible group in the sidebar: plain Unicode triangles, which
+/// Windows Terminal's default font draws (the Nerd Font Octicons pair it cannot).
+pub(in crate::client::shell) const FOLD_CLOSED: &str = "▸";
+pub(in crate::client::shell) const FOLD_OPEN: &str = "▾";
+
+/// Draws a fold chevron and a blank cell in the last two cells of `row`, and returns both
+/// cells as the toggle's click target.
+pub(in crate::client::shell) fn render_fold_toggle(
+    buffer: &mut Buffer,
+    row: Rect,
+    collapsed: bool,
+    palette: &Palette,
+) -> Rect {
+    let toggle = Rect::new(row.right().saturating_sub(2), row.y, row.width.min(2), 1);
     put_text(
         buffer,
         toggle.x,
         toggle.y,
         toggle.width,
-        if collapsed_groups.contains(&key) {
-            "▸"
-        } else {
-            "▾"
-        },
-        Style::default().fg(palette.accent),
+        &format!("{} ", if collapsed { FOLD_CLOSED } else { FOLD_OPEN }),
+        // A quiet dark gray, the tone of the header's agent count, not the accent blue.
+        Style::default().fg(palette.overlay0),
     );
-    Some((toggle, key))
+    toggle
 }
 
 pub(in crate::client::shell) fn displayed_workspace_status(

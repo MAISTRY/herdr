@@ -926,7 +926,22 @@ impl ClientShellState {
                     .iter()
                     .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
                 {
-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
+                    use super::agent_sidebar::AgentPanelItem;
+                    let items = super::agent_sidebar::agent_panel_items(
+                        snapshot,
+                        &self.config,
+                        &self.collapsed_groups,
+                    );
+                    let index = items.iter().position(|item| {
+                        matches!(item, AgentPanelItem::Agent(row) if row.pane_id == pane_id)
+                    }).or_else(|| {
+                        let agent = snapshot.agents.iter().find(|agent| agent.pane_id == pane_id)?;
+                        items.iter().position(|item| {
+                            matches!(item, AgentPanelItem::Header(header)
+                                if snapshot.workspaces[header.workspace_index].workspace_id == agent.workspace_id)
+                        })
+                    }).unwrap_or(next);
+                    self.agent_scroll = index.min(self.hits.agent_max_scroll);
                 }
                 Some(Method::PaneFocus(PaneTarget { pane_id }))
             }
