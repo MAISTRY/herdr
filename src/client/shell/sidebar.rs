@@ -253,6 +253,7 @@ pub(crate) fn render_sidebar(
                     .max(1)
                     .saturating_add(
                         space_session_lines(
+                            snapshot,
                             &space_sessions(snapshot, &workspace.workspace_id)
                                 .collect::<Vec<_>>(),
                             entry.indented,
@@ -321,6 +322,7 @@ pub(crate) fn render_sidebar(
         let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
         let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         let session_lines = space_session_lines(
+            snapshot,
             &sessions,
             entry.indented,
             config.status_indicators,
@@ -701,8 +703,17 @@ pub(in crate::client::shell) fn space_tint(
     focused: bool,
     palette: &Palette,
 ) -> ratatui::style::Color {
+    space_tint_amount(colour, if focused { 0.24 } else { 0.12 }, palette)
+}
+
+/// `colour` mixed `amount` (0..=1) over the sidebar background; non-RGB colours fall back to
+/// the plain focus highlight.
+pub(in crate::client::shell) fn space_tint_amount(
+    colour: ratatui::style::Color,
+    amount: f32,
+    palette: &Palette,
+) -> ratatui::style::Color {
     use ratatui::style::Color;
-    let amount = if focused { 0.24 } else { 0.12 };
     let Color::Rgb(r, g, b) = colour else {
         return palette.active_row_bg;
     };
@@ -908,8 +919,50 @@ pub(in crate::client::shell) fn space_sessions<'a>(
         .filter(move |tab| tab.workspace_id == workspace_id)
 }
 
-/// Display lines for each session row of one space, wrapped to `width`.
-fn space_session_lines(
+/// Name shown for a session row: the tab's custom label, else its agent's
+/// stripped terminal title (focused agent first), else the tab number when the
+/// space has more than one tab. A lone unnamed tab shows only its status icon.
+pub(in crate::client::shell) fn session_label(
+    snapshot: &ClientShellSnapshot,
+    tab: &crate::protocol::ClientShellTab,
+    tabs_in_space: usize,
+) -> String {
+    if tab.custom_label {
+        return tab.label.clone();
+    }
+    fn title(agent: &crate::protocol::ClientShellAgent) -> Option<&str> {
+        agent
+            .terminal_title_stripped
+            .as_deref()
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+    }
+    let agents = || {
+        snapshot
+            .agents
+            .iter()
+            .filter(|agent| agent.tab_id == tab.tab_id)
+    };
+    if let Some(title) = agents()
+        .filter(|agent| agent.focused)
+        .find_map(title)
+        .or_else(|| agents().find_map(title))
+    {
+        return title.to_string();
+    }
+    if tabs_in_space > 1 {
+        tab.number.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Display lines for each session row of one space, wrapped to `width`. The
+/// prefix, status icon and start of the name stay on the first line; only the name
+/// wraps, with continuation lines indented under where the name starts. A session
+/// with several agent panes lists each pane on its own line below its name.
+pub(in crate::client::shell) fn space_session_lines(
+    snapshot: &ClientShellSnapshot,
     sessions: &[&crate::protocol::ClientShellTab],
     indented: bool,
     indicators: crate::config::StatusIndicatorStyle,
@@ -918,11 +971,14 @@ fn space_session_lines(
 ) -> Vec<Vec<Vec<ratatui::text::Span<'static>>>> {
     use ratatui::text::Span;
     let base = if indented { "      " } else { "  " };
+    let width = width as usize;
+    let prefix_style = Style::default().fg(palette.overlay1);
     sessions
         .iter()
         .enumerate()
         .map(|(index, tab)| {
-            let branch = if index + 1 == sessions.len() { "└ " } else { "├ " };
+            let last = index + 1 == sessions.len();
+            let branch = if last { "└ " } else { "├ " };
             let label_style = if tab.focused {
                 Style::default()
                     .fg(palette.accent)
@@ -930,21 +986,88 @@ fn space_session_lines(
             } else {
                 Style::default().fg(palette.text)
             };
-            let spans = vec![
-                Span::styled(
-                    format!("{base}{branch}"),
-                    Style::default().fg(palette.overlay1),
-                ),
-                Span::styled(
-                    format!("{} ", status_icon(tab.agent_status, indicators)),
-                    Style::default().fg(status_color(tab.agent_status, palette)),
-                ),
-                Span::styled(tab.label.clone(), label_style),
-            ];
-            let continuation = base.len() + 4;
-            super::agent_sidebar::wrap_spans(spans, width as usize, 0, continuation)
+            let icon = format!("{} ", status_icon(tab.agent_status, indicators));
+            let prefix_width = base.len() + 2 + session_text_width(&icon);
+            let name = super::agent_sidebar::wrap_spans(
+                vec![Span::styled(
+                    session_label(snapshot, tab, sessions.len()),
+                    label_style,
+                )],
+                width.saturating_sub(prefix_width).max(1),
+                0,
+                0,
+            );
+            let mut lines = Vec::new();
+            for (line_index, mut line) in name.into_iter().enumerate() {
+                let mut spans = if line_index == 0 {
+                    vec![
+                        Span::styled(format!("{base}{branch}"), prefix_style),
+                        Span::styled(
+                            icon.clone(),
+                            Style::default().fg(status_color(tab.agent_status, palette)),
+                        ),
+                    ]
+                } else {
+                    vec![Span::raw(" ".repeat(prefix_width))]
+                };
+                spans.append(&mut line);
+                lines.push(spans);
+            }
+            let agents = snapshot
+                .agents
+                .iter()
+                .filter(|agent| agent.tab_id == tab.tab_id)
+                .collect::<Vec<_>>();
+            if agents.len() > 1 {
+                let guide = if last { "  " } else { "│ " };
+                let agent_prefix = format!("{base}{guide}");
+                let agent_prefix_width = session_text_width(&agent_prefix) + 2;
+                for agent in agents {
+                    let text = agent
+                        .display_agent
+                        .as_deref()
+                        .or(agent.name.as_deref())
+                        .or(agent.agent.as_deref())
+                        .or(agent.title.as_deref())
+                        .or(agent.terminal_title_stripped.as_deref())
+                        .or(agent.terminal_title.as_deref())
+                        .unwrap_or("terminal");
+                    let name_style = Style::default().fg(if agent.focused {
+                        palette.text
+                    } else {
+                        palette.subtext0
+                    });
+                    let wrapped = super::agent_sidebar::wrap_spans(
+                        vec![Span::styled(text.to_string(), name_style)],
+                        width.saturating_sub(agent_prefix_width).max(1),
+                        0,
+                        0,
+                    );
+                    for (line_index, mut line) in wrapped.into_iter().enumerate() {
+                        let mut spans = if line_index == 0 {
+                            vec![
+                                Span::styled(agent_prefix.clone(), prefix_style),
+                                Span::styled(
+                                    format!("{} ", status_icon(agent.agent_status, indicators)),
+                                    Style::default()
+                                        .fg(status_color(agent.agent_status, palette)),
+                                ),
+                            ]
+                        } else {
+                            vec![Span::raw(" ".repeat(agent_prefix_width))]
+                        };
+                        spans.append(&mut line);
+                        lines.push(spans);
+                    }
+                }
+            }
+            lines
         })
         .collect()
+}
+
+fn session_text_width(text: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(text)
 }
 
 fn render_space_sessions(
@@ -967,7 +1090,7 @@ fn render_space_sessions(
         }
         for (offset, line) in tab_lines.into_iter().take(height as usize).enumerate() {
             Paragraph::new(Line::from(line)).render(
-                Rect::new(area.x, y + offset as u16, area.width.saturating_sub(1), 1),
+                Rect::new(area.x, y + offset as u16, area.width, 1),
                 buffer,
             );
         }

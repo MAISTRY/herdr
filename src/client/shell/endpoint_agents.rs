@@ -72,7 +72,7 @@ pub(super) fn render_expanded(
         hits,
         |row, width| super::agent_sidebar::agent_row_lines(&row.agent, config, width, 0).len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, 0, None);
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, 0);
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -110,7 +110,10 @@ impl ClientShellState {
                 super::agent_sidebar::agent_row_lines(
                     &row.agent,
                     &self.config,
-                    self.hits.agent_body.width.saturating_sub(1),
+                    self.hits
+                        .agent_body
+                        .width
+                        .saturating_sub(super::agent_sidebar::AGENT_RESERVED_COLUMNS),
                     0,
                 )
                 .len()

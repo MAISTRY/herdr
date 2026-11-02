@@ -16,6 +16,8 @@ pub(super) struct AgentRow {
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Colour of the agent's space: drawn as a bar beside the entry and tinting its background.
+    pub(super) space_colour: Option<ratatui::style::Color>,
 }
 
 pub(super) struct AgentGroupHeader {
@@ -209,21 +211,7 @@ pub(super) fn render_agent_panel(
             }
             AgentPanelItem::Agent(row) => {
                 hits.agents.push((rect, row.pane_id.clone()));
-                let colour = snapshot
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.workspace_id == row.workspace_id)
-                    .and_then(|workspace| {
-                        super::sidebar::space_colour(snapshot, workspace, &config.spaces)
-                    });
-                render_agent_row(
-                    buffer,
-                    rect,
-                    row,
-                    config,
-                    if grouped { 2 } else { 0 },
-                    colour,
-                );
+                render_agent_row(buffer, rect, row, config, if grouped { 2 } else { 0 });
             }
         },
     );
@@ -357,6 +345,10 @@ pub(super) fn render_agent_panel_header(
     true
 }
 
+/// Columns the agent list keeps beside the text: the space colour bar on the left
+/// and the scrollbar column on the right.
+pub(super) const AGENT_RESERVED_COLUMNS: u16 = 2;
+
 pub(super) fn render_agent_list<T>(
     buffer: &mut Buffer,
     area: Rect,
@@ -420,9 +412,10 @@ fn render_agent_list_with_gap<T>(
 
     let row_heights = rows
         .iter()
-        // One column is kept for a possible scrollbar so heights match the drawn width.
+        // Two columns are reserved (space bar and scrollbar), always, so the measured
+        // wrap width is exactly the drawn one.
         .map(|row| {
-            row_lines(row, body.width.saturating_sub(1))
+            row_lines(row, body.width.saturating_sub(AGENT_RESERVED_COLUMNS))
                 .max(1)
                 .min(u16::MAX as usize) as u16
         })
@@ -448,7 +441,7 @@ fn render_agent_list_with_gap<T>(
         .max_offset_from_bottom
         .saturating_sub(metrics.offset_from_bottom);
     let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
+    let content_width = body.width.saturating_sub(1);
     let mut y = body.y;
     for (index, row) in rows.iter().enumerate().skip(*agent_scroll) {
         let height = row_heights[index].min(body.height);
@@ -561,6 +554,7 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        space_colour: super::sidebar::space_colour(snapshot, workspace, &config.spaces),
     })
 }
 
@@ -570,25 +564,42 @@ pub(super) fn render_agent_row(
     row: &AgentRow,
     config: &ClientShellConfig,
     extra_indent: usize,
-    space_colour: Option<ratatui::style::Color>,
 ) {
     let palette = &config.palette;
-    let row_style = match space_colour {
-        Some(colour) => {
-            Style::default().bg(super::sidebar::space_tint(colour, row.focused, palette))
-        }
+    // Agent entries wear a stronger wash of their space colour than the spaces rows.
+    let row_style = match row.space_colour {
+        Some(colour) => Style::default().bg(super::sidebar::space_tint_amount(
+            colour,
+            if row.focused { 0.38 } else { 0.22 },
+            palette,
+        )),
         None if row.focused => Style::default().bg(palette.active_row_bg),
         None => Style::default(),
     };
-    for (index, line) in agent_row_lines(row, config, rect.width, extra_indent)
-        .into_iter()
-        .take(rect.height as usize)
-        .enumerate()
+    for (index, line) in
+        agent_row_lines(row, config, rect.width.saturating_sub(1), extra_indent)
+            .into_iter()
+            .take(rect.height as usize)
+            .enumerate()
     {
+        let y = rect.y + index as u16;
         Paragraph::new(Line::from(line)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            Rect::new(rect.x + 1, y, rect.width.saturating_sub(1), 1),
             buffer,
         );
+        if let Some(cell) = buffer.cell_mut((rect.x, y)) {
+            match row.space_colour {
+                Some(colour) => {
+                    cell.set_char('▌').set_fg(colour);
+                }
+                None => {
+                    cell.set_char(' ');
+                }
+            }
+            if let Some(bg) = row_style.bg {
+                cell.set_bg(bg);
+            }
+        }
     }
 }
 

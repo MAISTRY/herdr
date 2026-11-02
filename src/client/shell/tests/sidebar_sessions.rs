@@ -195,3 +195,201 @@ fn long_session_names_wrap_onto_extra_lines_of_the_same_row() {
         .join(" ");
     assert!(text.contains("sidebar"), "end of the name is shown: {text:?}");
 }
+
+fn test_agent(pane_id: &str, tab_id: &str, workspace_id: &str, name: &str) -> crate::protocol::ClientShellAgent {
+    crate::protocol::ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: workspace_id.into(),
+        tab_id: tab_id.into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: crate::api::schema::AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }
+}
+
+fn session_lines(projected: &ClientShellSnapshot, tab: usize, width: u16) -> Vec<String> {
+    let sessions = projected.tabs.iter().skip(tab).take(1).collect::<Vec<_>>();
+    let config = ClientShellConfig::from_config(&Config::default());
+    super::super::sidebar::space_session_lines(
+        projected,
+        &sessions,
+        false,
+        config.status_indicators,
+        &config.palette,
+        width,
+    )
+    .remove(0)
+    .iter()
+    .map(|line| line_text(line))
+    .collect()
+}
+
+#[test]
+fn session_name_keeps_its_prefix_line_and_wraps_at_spaces() {
+    let mut projected = two_spaces();
+    projected.tabs[1].label = "continuous-improvement plan notes".into();
+    let text = session_lines(&projected, 1, 32);
+    assert!(text[0].contains('└') && text[0].contains("continuous-improvement"), "{text:?}");
+    assert!(text.len() >= 2, "{text:?}");
+    let name_start = text[0].chars().take_while(|c| *c != 'c').count();
+    let indent = text[1].chars().take_while(|c| *c == ' ').count();
+    assert_eq!(indent, name_start, "continuation sits under the name: {text:?}");
+}
+
+#[test]
+fn wrap_spans_adds_no_empty_line_at_exact_width() {
+    let spans = vec![ratatui::text::Span::raw("continuous-improvement")];
+    let lines = super::super::agent_sidebar::wrap_spans(spans, 23, 1, 3);
+    let text = lines.iter().map(|line| line_text(line)).collect::<Vec<_>>();
+    assert_eq!(text, [" continuous-improvement"]);
+}
+
+#[test]
+fn agent_blocks_have_a_space_bar_and_no_blank_lines_at_exact_width() {
+    let mut projected = two_spaces();
+    projected.agents.push(test_agent("pane_1", "tab_1", "ws_1", "continuous-improvement"));
+    projected.agents.push(test_agent("pane_2", "tab_2", "ws_2", "second"));
+    // A space's colour is the fg its workspace token is given in the spaces rows.
+    let config: Config = toml::from_str(
+        r##"
+[ui.sidebar.spaces]
+rows = [[{ token = "workspace", fg = "#89b4fa" }]]
+"##,
+    )
+    .expect("config");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 40).expect("frame");
+    let rows = (0..frame.height)
+        .map(|y| {
+            (0..frame.width)
+                .map(|x| frame.cells[(y * frame.width + x) as usize].symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let body = state.hits.agent_body;
+    let bar_rows = (body.y..body.bottom())
+        .filter(|y| rows[*y as usize].chars().nth(body.x as usize) == Some('▌'))
+        .count();
+    assert!(bar_rows >= 2, "every agent line has the bar:\n{}", rows.join("\n"));
+    let spans = state
+        .hits
+        .agents
+        .iter()
+        .map(|(rect, _)| *rect)
+        .chain(state.hits.endpoint_agents.iter().map(|(rect, _, _)| *rect))
+        .collect::<Vec<_>>();
+    assert_eq!(spans.len(), 2, "both agents drawn");
+    for rect in spans {
+        for y in rect.y..rect.bottom() {
+            assert_eq!(
+                rows[y as usize].chars().nth(body.x as usize),
+                Some('▌'),
+                "no blank line inside an agent block (row {y}):\n{}",
+                rows.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn dragging_a_multi_pane_session_keeps_panes_together() {
+    let mut projected = two_spaces();
+    let mut pane = projected.panes[0].clone();
+    pane.pane_id = "pane_3".into();
+    pane.focused = false;
+    projected.panes.push(pane);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("frame");
+    let source = sidebar_tab(&state, "tab_1");
+    let target = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_2")
+        .expect("ws_2 row")
+        .rect;
+    mouse(&mut state, MouseEventKind::Down(MouseButton::Left), source);
+    mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), target);
+    let drop = mouse(&mut state, MouseEventKind::Up(MouseButton::Left), target);
+    assert!(
+        drop.actions.is_empty(),
+        "multi-pane moves run as one ordered sequence into a single tab, not one NewTab per pane: {:?}",
+        drop.actions
+    );
+}
+
+#[test]
+fn sessions_with_several_agents_list_each_agent_pane() {
+    let mut projected = two_spaces();
+    projected.agents.push(test_agent("pane_1", "tab_1", "ws_1", "orchestrator"));
+    projected.agents.push(test_agent("pane_3", "tab_1", "ws_1", "helper-bot"));
+    let text = session_lines(&projected, 0, 40);
+    assert_eq!(text.len(), 3, "{text:?}");
+    assert!(text[1].contains("orchestrator") && text[2].contains("helper-bot"), "{text:?}");
+
+    // A single-agent session stays on one line.
+    let mut single = two_spaces();
+    single.agents.push(test_agent("pane_1", "tab_1", "ws_1", "orchestrator"));
+    assert_eq!(session_lines(&single, 0, 40).len(), 1);
+}
+
+#[test]
+fn grouped_agent_headers_fold_spaces_with_several_agents() {
+    let mut projected = two_spaces();
+    projected.agents.push(test_agent("pane_1", "tab_1", "ws_1", "orchestrator"));
+    projected.agents.push(test_agent("pane_3", "tab_1", "ws_1", "helper-bot"));
+    projected.agents.push(test_agent("pane_2", "tab_2", "ws_2", "solo"));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 40).expect("frame");
+    // Only the space with two agents can fold.
+    assert_eq!(state.hits.agent_group_headers.len(), 1);
+    assert_eq!(state.hits.agents.len(), 3);
+
+    let header = state.hits.agent_group_headers[0].0;
+    mouse(&mut state, MouseEventKind::Down(MouseButton::Left), header);
+    assert_eq!(state.collapsed_groups.len(), 1, "fold state is kept");
+    state.compose(106, 40).expect("frame");
+    let visible = state.hits.agents.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>();
+    assert_eq!(visible, ["pane_2"], "folded space hides its unfocused agents");
+}
+
+#[test]
+fn session_label_prefers_custom_label_then_terminal_title_then_number() {
+    use super::super::sidebar::session_label;
+    let mut projected = two_spaces();
+    // Custom label wins.
+    assert_eq!(session_label(&projected, &projected.tabs[1], 1), "review");
+
+    // Lone unnamed tab with no title shows nothing; with siblings it shows its number.
+    let tab = projected.tabs[0].clone();
+    assert_eq!(session_label(&projected, &tab, 1), "");
+    assert_eq!(session_label(&projected, &tab, 2), tab.number.to_string());
+
+    // A blank title is ignored; the focused agent's title wins over others.
+    let mut blank = test_agent("pane_1", "tab_1", "ws_1", "a");
+    blank.terminal_title_stripped = Some("   ".into());
+    projected.agents.push(blank);
+    assert_eq!(session_label(&projected, &tab, 1), "");
+    let mut other = test_agent("pane_3", "tab_1", "ws_1", "b");
+    other.terminal_title_stripped = Some("other title".into());
+    projected.agents.push(other);
+    let mut focused = test_agent("pane_4", "tab_1", "ws_1", "c");
+    focused.terminal_title_stripped = Some("fix login".into());
+    focused.focused = true;
+    projected.agents.push(focused);
+    assert_eq!(session_label(&projected, &tab, 2), "fix login");
+}
