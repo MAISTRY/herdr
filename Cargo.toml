@@ -92,3 +92,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[profile.fast]
+inherits = "release"
+opt-level = 1
+incremental = true
+codegen-units = 256
