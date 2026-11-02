@@ -215,6 +215,7 @@ pub(crate) fn render_sidebar(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let workspace_area = render_sidebar_status_block(buffer, workspace_area, snapshot, palette);
     put_text(
         buffer,
         workspace_area.x,
@@ -1097,4 +1098,62 @@ fn render_space_sessions(
         hits.sidebar_tabs.push((rect, tab.tab_id.clone()));
         y += height;
     }
+}
+
+/// Draws `sidebar:` status entries (system stats, usage...) at the top of the
+/// spaces section, wrapped, and returns the area left for the spaces list.
+fn render_sidebar_status_block(
+    buffer: &mut Buffer,
+    area: Rect,
+    snapshot: &ClientShellSnapshot,
+    palette: &Palette,
+) -> Rect {
+    use ratatui::text::Span;
+    let prefix = super::tabs::SIDEBAR_SEGMENT_PREFIX;
+    let lines = snapshot
+        .tab_bar_right
+        .iter()
+        .filter_map(|segment| {
+            let text = segment.text.strip_prefix(prefix)?.trim();
+            (!text.is_empty()).then_some((text, segment.accent))
+        })
+        .flat_map(|(text, accent)| {
+            let style = if accent {
+                Style::default()
+                    .fg(palette.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(palette.text)
+            };
+            super::agent_sidebar::wrap_spans(
+                vec![Span::styled(text.to_string(), style)],
+                area.width.saturating_sub(1) as usize,
+                1,
+                3,
+            )
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() || area.height < 8 {
+        return area;
+    }
+    // Keep at least half of the section for the spaces list.
+    let shown = lines.len().min((area.height / 2) as usize) as u16;
+    for (offset, line) in lines.into_iter().take(shown as usize).enumerate() {
+        Paragraph::new(Line::from(line)).render(
+            Rect::new(
+                area.x,
+                area.y + offset as u16,
+                area.width.saturating_sub(1),
+                1,
+            ),
+            buffer,
+        );
+    }
+    let used = shown + 1; // one blank line before " spaces"
+    Rect::new(
+        area.x,
+        area.y.saturating_add(used),
+        area.width,
+        area.height.saturating_sub(used),
+    )
 }

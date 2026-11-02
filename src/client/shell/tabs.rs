@@ -223,11 +223,23 @@ pub(crate) fn render_tab_bar(
     render_tab_bar_status(buffer, area, snapshot, palette);
 }
 
+/// Tab bar status entries whose text starts with this go to the sidebar instead.
+pub(crate) const SIDEBAR_SEGMENT_PREFIX: &str = "sidebar:";
+
+fn tab_bar_segments(
+    snapshot: &ClientShellSnapshot,
+) -> impl Iterator<Item = &crate::protocol::ClientShellTabStatusSegment> {
+    snapshot
+        .tab_bar_right
+        .iter()
+        .filter(|segment| !segment.text.starts_with(SIDEBAR_SEGMENT_PREFIX))
+}
+
 pub(crate) fn tab_bar_status_width(snapshot: &ClientShellSnapshot) -> u16 {
-    let content = snapshot.tab_bar_right.iter().fold(0u16, |width, segment| {
+    let content = tab_bar_segments(snapshot).fold(0u16, |width, segment| {
         width.saturating_add(display_width(&segment.text))
     });
-    let separators = snapshot.tab_bar_right.len().saturating_sub(1);
+    let separators = tab_bar_segments(snapshot).count().saturating_sub(1);
     content.saturating_add(
         display_width(&snapshot.tab_bar_right_separator)
             .saturating_mul(separators.min(u16::MAX as usize) as u16),
@@ -265,7 +277,7 @@ fn render_tab_bar_status(
     };
     let separator_width = display_width(&snapshot.tab_bar_right_separator);
     let mut x = status.x;
-    for (index, segment) in snapshot.tab_bar_right.iter().enumerate() {
+    for (index, segment) in tab_bar_segments(snapshot).enumerate() {
         if index > 0 && separator_width > 0 {
             put_text(
                 buffer,
