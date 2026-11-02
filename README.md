@@ -1,5 +1,20 @@
 # herdr
 
+> **This fork is my Windows setup of herdr.** The changes live on the `kit` branch, built on herdr v0.9.5.
+>
+> **Changes in this fork**
+> - **Agents grouped by space:** the agents list shows agents under their space, with foldable headers, a tint per space, and a set tab bar text colour.
+> - **Sessions under each space:** the sidebar lists each space's sessions under it, and you can drag a session onto another space to move it there.
+> - **Drag fallback:** if the server rejects `pane.move` from the TUI, the drag uses the public API instead.
+> - **Fast build profile:** `cargo build --profile fast` gives quicker local rebuilds (opt-level 1, incremental).
+>
+> **Extras kept outside this repo** (in `~/.herdr/kit`)
+> - `focus-space.js`: jumps to the Nth space, or the next/previous one (a Windows port of the kit's `focus-space.sh`).
+> - `herdr-subagents.js`: a Claude Code hook that shows running subagents in herdr's agents panel.
+> - `claude-worktrees` plugin: shows each `<repo>/.claude/worktrees/*` worktree as its own space, nested under its repo's space.
+>
+> **Updating:** don't run `herdr update`. It replaces the custom binary with the stock release, which drops these changes. Rebase `kit` onto the new release tag instead, then rebuild.
+
 
 <p align="center">
   <img src="assets/logo.png" alt="herdr" width="100" />
