@@ -14,6 +14,12 @@ $here     = Join-Path $env:USERPROFILE '.herdr\kit\auto-update'
 $log      = Join-Path $here 'auto-update.log'
 $buildLog = Join-Path $here 'last-build.log'
 $upstream = 'herdrdev/herdr'
+# The build needs Zig, which is not on PATH; use the newest one installed under LOCALAPPDATA.
+if (-not $env:ZIG) {
+  $z = Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Programs\zig') -Filter zig.exe -Recurse -ErrorAction SilentlyContinue |
+       Sort-Object FullName -Descending | Select-Object -First 1
+  if ($z) { $env:ZIG = $z.FullName }
+}
 $fork     = 'MAISTRY/herdr'
 
 function Log([string]$m) {
