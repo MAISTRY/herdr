@@ -926,7 +926,14 @@ impl ClientShellState {
                     .iter()
                     .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
                 {
-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
+                    let item = super::agent_sidebar::agent_list_item_index(
+                        snapshot,
+                        self.config.agent_panel_sort,
+                        &self.collapsed_groups,
+                        &pane_id,
+                    )
+                    .unwrap_or(next);
+                    self.agent_scroll = item.min(self.hits.agent_max_scroll);
                 }
                 Some(Method::PaneFocus(PaneTarget { pane_id }))
             }

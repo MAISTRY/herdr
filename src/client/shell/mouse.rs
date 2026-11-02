@@ -2230,6 +2230,19 @@ impl ClientShellState {
                 if self.handle_endpoint_agent_click(point, outcome) {
                     return;
                 }
+                let group_header = self
+                    .hits
+                    .agent_group_headers
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, key)| key.clone());
+                if let Some(key) = group_header {
+                    let endpoint_id = self.active_endpoint_id.clone();
+                    self.toggle_collapsed_group(&endpoint_id, key);
+                    outcome.repaint = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
                 let agent_pane_id = self
                     .hits
                     .agents

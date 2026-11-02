@@ -479,6 +479,7 @@ pub(super) fn render_expanded(
                     selected,
                     state.selected_workspace_id.is_some(),
                     false,
+                    None,
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {

@@ -364,6 +364,28 @@ fn sessions_with_several_agents_list_each_agent_pane() {
 }
 
 #[test]
+fn grouped_agent_headers_fold_spaces_with_several_agents() {
+    let mut projected = two_spaces();
+    projected.agents.push(test_agent("pane_1", "tab_1", "ws_1", "orchestrator"));
+    projected.agents.push(test_agent("pane_3", "tab_1", "ws_1", "helper-bot"));
+    projected.agents.push(test_agent("pane_2", "tab_2", "ws_2", "solo"));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 40).expect("frame");
+    // Only the space with two agents can fold.
+    assert_eq!(state.hits.agent_group_headers.len(), 1);
+    assert_eq!(state.hits.agents.len(), 3);
+
+    let header = state.hits.agent_group_headers[0].0;
+    mouse(&mut state, MouseEventKind::Down(MouseButton::Left), header);
+    assert_eq!(state.collapsed_groups.len(), 1, "fold state is kept");
+    state.compose(106, 40).expect("frame");
+    let visible = state.hits.agents.iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>();
+    assert_eq!(visible, ["pane_2"], "folded space hides its unfocused agents");
+}
+
+#[test]
 fn session_label_prefers_custom_label_then_terminal_title_then_number() {
     use super::super::sidebar::session_label;
     let mut projected = two_spaces();

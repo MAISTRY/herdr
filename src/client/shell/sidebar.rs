@@ -322,12 +322,13 @@ pub(crate) fn render_sidebar(
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
         let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
         let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let color = space_color(snapshot, &workspace.workspace_id, config);
         let session_lines = space_session_lines(
             snapshot,
             &sessions,
             entry.indented,
             config.status_indicators,
-            &space_palette(palette, space_color(snapshot, &workspace.workspace_id, palette)),
+            &space_palette(palette, color),
             body.width.saturating_sub(1),
         );
         let row_height = head_height
@@ -360,10 +361,24 @@ pub(crate) fn render_sidebar(
             target.matches(state.active_endpoint_id, &workspace.workspace_id)
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+        // Only RGB colours can be mixed; other palettes keep the plain focus highlight.
+        let space_tint = matches!(
+            (color, palette.sidebar_bg),
+            (ratatui::style::Color::Rgb(..), ratatui::style::Color::Rgb(..))
+        )
+        .then(|| {
+            tint(
+                color,
+                palette.sidebar_bg,
+                if workspace.focused { 0.24 } else { 0.12 },
+            )
+        });
         if selected {
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
+        } else if let Some(space_tint) = space_tint {
+            buffer.set_style(rect, Style::default().bg(space_tint));
         } else if workspace.focused {
             buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
@@ -378,7 +393,8 @@ pub(crate) fn render_sidebar(
             selected,
             state.selected_workspace_id.is_some(),
             dragged,
-            &space_palette(palette, space_color(snapshot, &workspace.workspace_id, palette)),
+            space_tint,
+            &space_palette(palette, color),
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -481,6 +497,7 @@ pub(crate) fn render_sidebar(
         detail_area,
         snapshot,
         config,
+        state.collapsed_groups,
         state.agent_scroll,
         hits,
     );
@@ -746,6 +763,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     selected: bool,
     navigating: bool,
     dragged: bool,
+    space_tint: Option<ratatui::style::Color>,
     palette: &Palette,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
@@ -819,6 +837,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
         Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
+    } else if space_tint.is_some() {
+        space_tint
     } else if focused {
         Some(workspace_active_background(palette, navigating))
     } else {
@@ -1077,12 +1097,34 @@ fn display_width(text: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(text)
 }
 
-/// A distinct theme colour per space, in space order.
+/// The colour of a space: the `fg` the user's `[ui.sidebar.spaces]` rows give its
+/// workspace token (rules match by name), else a distinct theme colour by space
+/// order. A linked worktree takes its repo's primary space colour.
 pub(in crate::client::shell) fn space_color(
     snapshot: &ClientShellSnapshot,
     workspace_id: &str,
-    palette: &Palette,
+    config: &ClientShellConfig,
 ) -> ratatui::style::Color {
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == workspace_id);
+    let primary = workspace
+        .and_then(|workspace| workspace.worktree.as_ref())
+        .filter(|worktree| worktree.is_linked_worktree)
+        .and_then(|linked| {
+            snapshot.workspaces.iter().find(|candidate| {
+                candidate.worktree.as_ref().is_some_and(|worktree| {
+                    worktree.key == linked.key && !worktree.is_linked_worktree
+                })
+            })
+        })
+        .or(workspace);
+    if let Some(color) = primary.and_then(|workspace| configured_space_color(workspace, config)) {
+        return color;
+    }
+    let workspace_id = primary.map_or(workspace_id, |workspace| workspace.workspace_id.as_str());
+    let palette = &config.palette;
     let colors = [
         palette.blue,
         palette.mauve,
@@ -1098,6 +1140,26 @@ pub(in crate::client::shell) fn space_color(
         .position(|workspace| workspace.workspace_id == workspace_id)
         .unwrap_or(0);
     colors[index % colors.len()]
+}
+
+/// The `fg` that the spaces rows give this space's workspace token, if any.
+fn configured_space_color(
+    workspace: &ClientShellWorkspace,
+    config: &ClientShellConfig,
+) -> Option<ratatui::style::Color> {
+    config
+        .spaces
+        .rows
+        .iter()
+        .flatten()
+        .filter(|token| {
+            matches!(
+                token.parts().0,
+                crate::config::SpaceSidebarToken::Workspace
+            )
+        })
+        .find_map(|token| token.style_for_value(&workspace.label)?.fg)
+        .map(|fg| fg.ratatui())
 }
 
 /// Palette for drawing one space: its names use the space colour
