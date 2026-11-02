@@ -2174,8 +2174,11 @@ impl ClientShellState {
                     return;
                 }
                 let group_toggle = self.hits.workspaces.iter().find_map(|hit| {
-                    let (rect, key) = hit.group_toggle.as_ref()?;
-                    super::contains(*rect, point).then(|| (hit.endpoint_id.clone(), key.clone()))
+                    let (_, key) = [&hit.group_toggle, &hit.tabs_toggle]
+                        .into_iter()
+                        .flatten()
+                        .find(|(rect, _)| super::contains(*rect, point))?;
+                    Some((hit.endpoint_id.clone(), key.clone()))
                 });
                 if let Some((endpoint_id, key)) = group_toggle {
                     self.toggle_collapsed_group(&endpoint_id, key);

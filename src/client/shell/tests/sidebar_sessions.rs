@@ -254,6 +254,7 @@ fn session_lines(projected: &ClientShellSnapshot, tab: usize, width: u16) -> Vec
     super::super::sidebar::space_session_lines(
         projected,
         &sessions,
+        sessions.len(),
         false,
         config.status_indicators,
         &config.palette,
@@ -425,4 +426,121 @@ fn session_label_prefers_custom_label_then_terminal_title_then_number() {
     focused.focused = true;
     projected.agents.push(focused);
     assert_eq!(session_label(&projected, &tab, 2), "fix login");
+}
+
+/// `two_spaces` with a second, unfocused tab in ws_1 next to the focused tab_1.
+fn two_tabs_in_first_space() -> ClientShellSnapshot {
+    let mut projected = two_spaces();
+    let mut tab = projected.tabs[0].clone();
+    tab.tab_id = "tab_3".into();
+    tab.number = 2;
+    tab.focused = false;
+    projected.tabs.push(tab);
+    projected
+}
+
+fn compose_with(projected: ClientShellSnapshot) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("frame");
+    state
+}
+
+fn tabs_toggle(state: &ClientShellState, workspace_id: &str) -> Rect {
+    state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == workspace_id)
+        .and_then(|hit| hit.tabs_toggle.as_ref())
+        .map(|(rect, _)| *rect)
+        .expect("tabs toggle")
+}
+
+fn session_ids(state: &ClientShellState) -> Vec<&str> {
+    state
+        .hits
+        .sidebar_tabs
+        .iter()
+        .map(|(_, id)| id.as_str())
+        .collect()
+}
+
+fn press(state: &mut ClientShellState, at: Rect) {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: at.x,
+        row: at.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+}
+
+#[test]
+fn every_space_with_tabs_has_a_tabs_toggle_on_its_header_row() {
+    let state = compose_with(two_spaces());
+    for hit in &state.hits.workspaces {
+        let (rect, key) = hit.tabs_toggle.as_ref().expect("toggle per space");
+        assert_eq!(*key, format!("space-tabs:{}", hit.workspace_id));
+        assert_eq!(rect.y, hit.rect.y, "toggle sits on the header row");
+        assert_eq!(rect.right(), hit.rect.right(), "toggle sits on the right");
+    }
+}
+
+#[test]
+fn folding_a_space_hides_its_unfocused_tabs_and_keeps_the_focused_one() {
+    let mut state = compose_with(two_tabs_in_first_space());
+    assert_eq!(session_ids(&state), ["tab_1", "tab_3", "tab_2"]);
+
+    let at = tabs_toggle(&state, "ws_1");
+    press(&mut state, at);
+    assert!(state.collapsed_groups.contains("space-tabs:ws_1"));
+    state.compose(106, 30).expect("frame");
+    assert_eq!(
+        session_ids(&state),
+        ["tab_1", "tab_2"],
+        "the focused tab stays; the other space is untouched"
+    );
+
+    let at = tabs_toggle(&state, "ws_1");
+    press(&mut state, at);
+    assert!(state.collapsed_groups.is_empty());
+    state.compose(106, 30).expect("frame");
+    assert_eq!(session_ids(&state), ["tab_1", "tab_3", "tab_2"]);
+}
+
+#[test]
+fn folding_an_unfocused_space_hides_all_its_tabs() {
+    let mut state = compose_with(two_spaces());
+    let at = tabs_toggle(&state, "ws_2");
+    press(&mut state, at);
+    state.compose(106, 30).expect("frame");
+    assert_eq!(session_ids(&state), ["tab_1"]);
+}
+
+#[test]
+fn rows_below_a_folded_space_keep_their_hit_areas() {
+    let mut state = compose_with(two_tabs_in_first_space());
+    let before = tabs_toggle(&state, "ws_2");
+    let at = tabs_toggle(&state, "ws_1");
+    press(&mut state, at);
+    state.compose(106, 30).expect("frame");
+
+    // ws_2 moved up by the one hidden row, and its toggle and tab row follow it.
+    let after = tabs_toggle(&state, "ws_2");
+    assert_eq!(after.y + 1, before.y);
+    let review = sidebar_tab(&state, "tab_2");
+    let ws_2 = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_2")
+        .expect("ws_2 row")
+        .rect;
+    assert_eq!(review.y, ws_2.bottom(), "tab row sits right under its space");
+
+    press(&mut state, after);
+    assert!(state.collapsed_groups.contains("space-tabs:ws_2"));
+    state.compose(106, 30).expect("frame");
+    assert_eq!(session_ids(&state), ["tab_1"]);
 }

@@ -107,6 +107,7 @@ pub(crate) fn render_collapsed_sidebar(
             workspace_id: workspace.workspace_id.clone(),
             indented: false,
             group_toggle: None,
+            tabs_toggle: None,
         });
     }
 
@@ -255,8 +256,12 @@ pub(crate) fn render_sidebar(
                     .saturating_add(
                         space_session_lines(
                             snapshot,
-                            &space_sessions(snapshot, &workspace.workspace_id)
-                                .collect::<Vec<_>>(),
+                            &visible_space_sessions(
+                                snapshot,
+                                &workspace.workspace_id,
+                                state.collapsed_groups,
+                            ),
+                            space_sessions(snapshot, &workspace.workspace_id).count(),
                             entry.indented,
                             config.status_indicators,
                             palette,
@@ -320,11 +325,14 @@ pub(crate) fn render_sidebar(
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let sessions = space_sessions(snapshot, &workspace.workspace_id).collect::<Vec<_>>();
+        let tab_count = space_sessions(snapshot, &workspace.workspace_id).count();
+        let sessions =
+            visible_space_sessions(snapshot, &workspace.workspace_id, state.collapsed_groups);
         let head_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         let session_lines = space_session_lines(
             snapshot,
             &sessions,
+            tab_count,
             entry.indented,
             config.status_indicators,
             palette,
@@ -393,12 +401,27 @@ pub(crate) fn render_sidebar(
             state.collapsed_groups,
             palette,
         );
+        // The tab toggle takes the right-most cells unless the repo group toggle already has them.
+        let tabs_toggle = (tab_count > 0).then(|| {
+            let key = space_tabs_key(&workspace.workspace_id);
+            let row = Rect::new(
+                rect.x,
+                rect.y,
+                rect.width
+                    .saturating_sub(if group_toggle.is_some() { 2 } else { 0 }),
+                rect.height,
+            );
+            let toggle =
+                render_fold_toggle(buffer, row, state.collapsed_groups.contains(&key), palette);
+            (toggle, key)
+        });
         hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
             workspace_id: workspace.workspace_id.clone(),
             indented: entry.indented,
             group_toggle,
+            tabs_toggle,
         });
         let gap = entries
             .get(entry_position + 1)
@@ -920,6 +943,24 @@ pub(in crate::client::shell) fn space_sessions<'a>(
         .filter(move |tab| tab.workspace_id == workspace_id)
 }
 
+/// Fold key of one space's tab rows in `collapsed_groups`. The prefix keeps it clear of the
+/// repo-group and agent-panel keys that live in the same set.
+pub(in crate::client::shell) fn space_tabs_key(workspace_id: &str) -> String {
+    format!("space-tabs:{workspace_id}")
+}
+
+/// The tab rows a space shows: all of them, or only the focused one while the space is folded.
+pub(in crate::client::shell) fn visible_space_sessions<'a>(
+    snapshot: &'a ClientShellSnapshot,
+    workspace_id: &'a str,
+    collapsed_groups: &HashSet<String>,
+) -> Vec<&'a crate::protocol::ClientShellTab> {
+    let collapsed = collapsed_groups.contains(&space_tabs_key(workspace_id));
+    space_sessions(snapshot, workspace_id)
+        .filter(|tab| !collapsed || tab.focused)
+        .collect()
+}
+
 /// Name shown for a session row: the tab's custom label, else its agent's
 /// stripped terminal title (focused agent first), else the tab number when the
 /// space has more than one tab. A lone unnamed tab shows only its status icon.
@@ -958,13 +999,15 @@ pub(in crate::client::shell) fn session_label(
     }
 }
 
-/// Display lines for each session row of one space, wrapped to `width`. The
+/// Display lines for each session row of one space (`tabs_in_space` also counts tabs folded
+/// away, so a kept tab keeps its number), wrapped to `width`. The
 /// prefix, status icon and start of the name stay on the first line; only the name
 /// wraps, with continuation lines indented under where the name starts. A session
 /// with several agent panes lists each pane on its own line below its name.
 pub(in crate::client::shell) fn space_session_lines(
     snapshot: &ClientShellSnapshot,
     sessions: &[&crate::protocol::ClientShellTab],
+    tabs_in_space: usize,
     indented: bool,
     indicators: crate::config::StatusIndicatorStyle,
     palette: &Palette,
@@ -991,7 +1034,7 @@ pub(in crate::client::shell) fn space_session_lines(
             let prefix_width = base.len() + 2 + session_text_width(&icon);
             let name = super::agent_sidebar::wrap_spans(
                 vec![Span::styled(
-                    session_label(snapshot, tab, sessions.len()),
+                    session_label(snapshot, tab, tabs_in_space),
                     label_style,
                 )],
                 width.saturating_sub(prefix_width).max(1),

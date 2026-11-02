@@ -242,6 +242,8 @@ pub(super) struct WorkspaceHit {
     pub(super) workspace_id: String,
     pub(super) indented: bool,
     pub(super) group_toggle: Option<(Rect, String)>,
+    /// Fold toggle for this space's tab rows, with its `collapsed_groups` key.
+    pub(super) tabs_toggle: Option<(Rect, String)>,
 }
 
 #[derive(Debug)]
