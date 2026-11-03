@@ -12,6 +12,7 @@
 > - `focus-space.js`: jumps to the Nth space, or the next/previous one (a Windows port of the kit's `focus-space.sh`).
 > - `herdr-subagents.js`: a Claude Code hook that shows running subagents in herdr's agents panel.
 > - `claude-worktrees` plugin: shows each `<repo>/.claude/worktrees/*` worktree as its own space, nested under its repo's space.
+> - `stats/`: the CPU, RAM, disk and GPU line in the tab bar. `stats.ps1` updates it every 2 seconds, and `add-herdr-stats-startup.ps1` adds the Startup shortcut that runs it at logon.
 >
 > **Updating:** don't run `herdr update`. It replaces the custom binary with the stock release, which drops these changes. Instead, a daily Windows scheduled task (`herdr-auto-update`, script in `~/.herdr/kit/auto-update`) watches for new herdr releases. When one comes out, it rebases `kit` onto it, builds, runs the tests, installs the new exe and pushes `kit` here. If the rebase conflicts or the build or tests fail, it rolls back and sends a notification instead.
 
