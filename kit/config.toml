@@ -1,0 +1,198 @@
+onboarding = false
+
+[theme]
+name = "tokyo-night"
+auto_switch = false
+
+# Tokyo Night blackened (herdr kit): text and accent colours stay, surfaces drop to the
+# near-black navy of the terminal background #0d0e14.
+[theme.custom]
+panel_bg = "reset"
+sidebar_bg = "#090a0f"
+surface_dim = "#0d0e14"
+surface0 = "#13141c"
+surface1 = "#1a1b26"
+active_row_bg = "#1a1b26"
+selection_bg = "#283457"
+
+[terminal]
+new_cwd = "follow"
+
+[keys]
+focus_pane_left  = ["prefix+h", "ctrl+alt+h"]
+focus_pane_down  = ["prefix+j", "ctrl+alt+j"]
+focus_pane_up    = ["prefix+k", "ctrl+alt+k"]
+focus_pane_right = ["prefix+l", "ctrl+alt+l"]
+# shift+left/right step tabs, shift+up/down step spaces (commands below)
+previous_tab     = ["prefix+p", "shift+left", "ctrl+alt+[", "f1"]
+next_tab         = ["prefix+n", "shift+right", "ctrl+alt+]", "f2"]
+new_tab          = ["prefix+c", "ctrl+alt+c"]
+new_workspace    = ["prefix+shift+n", "alt+shift+t"]
+close_tab        = ["prefix+shift+x", "ctrl+w"]
+move_tab_previous = "alt+shift+left"
+move_tab_next     = "alt+shift+right"
+split_vertical   = ["prefix+v", "ctrl+alt+d"]
+split_horizontal = ["prefix+minus", "ctrl+alt+shift+d"]
+zoom             = ["prefix+z", "ctrl+alt+z"]
+# alt+N: tab N. ctrl+alt+N (sent by Windows Terminal as prefix then alt+N): space N.
+switch_tab       = ["prefix+1..9", "ctrl+1..9", "alt+1..9"]
+next_agent       = "ctrl+alt+n"
+previous_agent   = "ctrl+alt+p"
+open_worktree    = "prefix+alt+o"
+remove_worktree  = "prefix+alt+x"
+
+# ctrl+t: new tab in the focused pane's folder with Claude running (opus, high).
+# ctrl+alt+r: the same with claude -r (resume picker). Script answers the trust prompt.
+[[keys.command]]
+key = "ctrl+t"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\new-claude-tab.js"'
+description = "new Claude tab"
+
+[[keys.command]]
+key = "ctrl+alt+r"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\new-claude-tab.js" -r'
+description = "new Claude tab, resume picker"
+
+# scratch shell over the layout; exit to close
+[[keys.command]]
+key = "ctrl+alt+s"
+type = "popup"
+command = "powershell.exe -NoLogo"
+width = "80%"
+height = "80%"
+
+[[keys.command]]
+key = "prefix+alt+1"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 1'
+description = "focus space 1"
+[[keys.command]]
+key = "prefix+alt+2"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 2'
+description = "focus space 2"
+[[keys.command]]
+key = "prefix+alt+3"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 3'
+description = "focus space 3"
+[[keys.command]]
+key = "prefix+alt+4"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 4'
+description = "focus space 4"
+[[keys.command]]
+key = "prefix+alt+5"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 5'
+description = "focus space 5"
+[[keys.command]]
+key = "prefix+alt+6"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 6'
+description = "focus space 6"
+[[keys.command]]
+key = "prefix+alt+7"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 7'
+description = "focus space 7"
+[[keys.command]]
+key = "prefix+alt+8"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 8'
+description = "focus space 8"
+[[keys.command]]
+key = "prefix+alt+9"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" 9'
+description = "focus space 9"
+[[keys.command]]
+key = "shift+up"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" prev'
+description = "previous space"
+
+[[keys.command]]
+key = "shift+down"
+type = "shell"
+command = 'node "{{HOME}}\.herdr\kit\focus-space.js" next'
+description = "next space"
+
+[worktrees]
+directory = '{{HOME}}\.herdr\worktrees'
+
+[ui]
+show_agent_labels_on_pane_borders = true
+prompt_new_tab_name = false
+hide_tab_bar_when_single_tab = true
+status_indicators = "symbols"
+# Agents in space order, grouped under one header per space by the patched client.
+agent_panel_sort = "spaces"
+# No pane frames, gaps or scrollbars: split panes share one divider line.
+pane_outer_borders = false
+pane_gaps = false
+pane_scrollbars = false
+# CPU / RAM / Disk / GPU (written by ~/.herdr/stats/stats.ps1), then date and 12-hour time.
+tab_bar_right = [
+  { type = "command", command = 'type "{{HOME}}\.herdr\stats\stats.txt"', interval_seconds = 2, timeout_seconds = 8 },
+  { type = "datetime", format = "%a %-d %b" },
+  { type = "datetime", format = "%-I:%M %p" },
+]
+tab_bar_right_separator = " · "
+
+# Each space's name wears its own colour; the patched client tints its rows with it.
+[ui.sidebar.spaces]
+row_gap = 0
+rows = [
+  ["state_icon", { token = "workspace", rules = [
+    { equals = "Projects", fg = "#7aa2f7" },
+    { equals = "{{SPACE2}}", fg = "#bb9af7" },
+    { equals = "Random", fg = "#9ece6a" },
+    { equals = "Work", fg = "#f7768e" },
+    { equals = "Notes", fg = "#e0af68" },
+  ] }],
+  ["branch", "git_status"],
+]
+
+# Agents sit under one header per space. Claude agents get one dim line per running
+# subagent ($sub1..$sub15, reported by ~/.herdr/kit/herdr-subagents.js).
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "machine", { token = "tab", fg = "#ffffff", dim = false }],
+  [{ token = "agent", fg = "#ffffff", dim = false }],
+]
+
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "machine", { token = "tab", fg = "#ffffff", dim = false }],
+  [{ token = "$sub1", fg = "#ffffff", dim = false }],
+  [{ token = "$sub2", fg = "#ffffff", dim = false }],
+  [{ token = "$sub3", fg = "#ffffff", dim = false }],
+  [{ token = "$sub4", fg = "#ffffff", dim = false }],
+  [{ token = "$sub5", fg = "#ffffff", dim = false }],
+  [{ token = "$sub6", fg = "#ffffff", dim = false }],
+  [{ token = "$sub7", fg = "#ffffff", dim = false }],
+  [{ token = "$sub8", fg = "#ffffff", dim = false }],
+  [{ token = "$sub9", fg = "#ffffff", dim = false }],
+  [{ token = "$sub10", fg = "#ffffff", dim = false }],
+  [{ token = "$sub11", fg = "#ffffff", dim = false }],
+  [{ token = "$sub12", fg = "#ffffff", dim = false }],
+  [{ token = "$sub13", fg = "#ffffff", dim = false }],
+  [{ token = "$sub14", fg = "#ffffff", dim = false }],
+  [{ token = "$sub15", fg = "#ffffff", dim = false }],
+]
+
+[ui.toast]
+delivery = "system"
+
+[ui.sound]
+enabled = true
+
+[session]
+resume_agents_on_restore = true
+
+[experimental]
+# saves pane output to session-history.json; can include secrets
+pane_history = true
